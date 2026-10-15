@@ -549,6 +549,8 @@ openstack --os-cloud demo server create --flavor m1.small --image Ubuntu2404 \
 
 ## Project layout
 
+Every folder has its own README: [`inventory/`](inventory/README.md), [`roles/`](roles/README.md) (index of all roles, one README per role), [`templates/`](templates/README.md) and [`scripts/`](scripts/README.md).
+
 ```
 openstack-ansible/
 ├── ansible.cfg
