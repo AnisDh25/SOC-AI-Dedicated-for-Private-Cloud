@@ -1,0 +1,36 @@
+# {{ ansible_managed }}
+[DEFAULT]
+bind_host = {{ api_bind_host }}
+bind_port = 9311
+host_href = https://{{ controller_fqdn }}:9311
+log_file = /var/log/barbican/api.log
+transport_url = {{ rabbit_url }}
+
+[secretstore]
+namespace = barbican.secretstore.plugin
+enabled_secretstore_plugins = store_crypto
+
+[crypto]
+namespace = barbican.crypto.plugin
+enabled_crypto_plugins = simple_crypto
+
+[simple_crypto_plugin]
+kek = '{{ vault_barbican_kek }}'
+
+[database]
+connection = mysql+pymysql://barbican:{{ vault_db_passwords.barbican }}@{{ controller_fqdn }}:3306/barbican
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = barbican
+password = {{ vault_service_passwords.barbican }}
+insecure = false
+
+[oslo_policy]
+enforce_new_defaults = true

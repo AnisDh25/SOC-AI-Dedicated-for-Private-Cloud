@@ -1,0 +1,7 @@
+---
+# HA controller 02 (real lab VM, see vms_ip)
+ansible_host: 192.168.1.22
+ansible_user: ubuntu
+mgmt_ip: 192.168.1.22
+# Unaddressed NIC for the provider/external network (gateway chassis).
+provider_interface: ens38

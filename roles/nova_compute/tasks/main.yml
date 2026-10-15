@@ -1,0 +1,80 @@
+---
+# Server World (09) Nova #3 and flamingo2 (17) Add Compute Nodes.
+
+- name: Check hardware virtualization (when the common role was skipped by tags)
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: _kvm_dev
+  when: nova_virt_type is not defined
+
+- name: Select libvirt virt_type
+  ansible.builtin.set_fact:
+    nova_virt_type: "{{ 'kvm' if _kvm_dev.stat.exists else 'qemu' }}"
+  when: nova_virt_type is not defined
+
+- name: Install nova-compute
+  ansible.builtin.apt:
+    name: [nova-compute, nova-compute-kvm, qemu-system-data]
+    state: present
+
+- name: iSCSI initiator for LVM volumes served by the storage node
+  ansible.builtin.apt:
+    name: open-iscsi
+    state: present
+  when: enable_cinder | bool
+
+- name: Enable iscsid
+  ansible.builtin.systemd_service:
+    name: iscsid
+    state: started
+    enabled: true
+  when: enable_cinder | bool
+
+- name: NFS client for NFS-backed volumes (Server World 30)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nfs_client.yml
+  when: enable_cinder | bool and enable_cinder_nfs | bool
+
+- name: nova.conf
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/nova.conf.j2"
+    dest: /etc/nova/nova.conf
+    owner: root
+    group: nova
+    mode: "0640"
+  notify: restart nova
+
+- name: libvirt virt_type ({{ nova_virt_type }})
+  community.general.ini_file:
+    path: /etc/nova/nova-compute.conf
+    section: libvirt
+    option: virt_type
+    value: "{{ nova_virt_type }}"
+  notify: restart nova
+
+- name: Enable nova-compute
+  ansible.builtin.systemd_service:
+    name: nova-compute
+    state: started
+    enabled: true
+
+- name: Restart nova-compute now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait until this hypervisor has registered
+  ansible.builtin.command: openstack compute service list --service nova-compute -f value -c Host
+  register: _computes
+  until: inventory_hostname_short in _computes.stdout_lines or inventory_hostname in _computes.stdout_lines
+  retries: 30
+  delay: 5
+  changed_when: false
+  delegate_to: "{{ controller_host }}"
+
+- name: Discover compute hosts
+  ansible.builtin.command:
+    argv: [su, -s, /bin/sh, -c, "nova-manage cell_v2 discover_hosts", nova]
+  register: _discover
+  changed_when: "'Creating host mapping' in _discover.stdout"
+  delegate_to: "{{ controller_host }}"
+  run_once: true

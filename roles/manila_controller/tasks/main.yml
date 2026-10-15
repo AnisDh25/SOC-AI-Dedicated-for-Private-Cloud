@@ -1,0 +1,90 @@
+---
+# Server World flamingo3 (42) Configure Manila (Control Node).
+
+- name: Register Manila in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: manila
+    ks_password: "{{ vault_service_passwords.manila }}"
+    ks_services:
+      - {name: manilav2, type: sharev2, description: OpenStack Shared Filesystem V2, url: "https://{{ controller_fqdn }}:8786/v2"}
+
+- name: Manila database
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [manila]
+    db_user: manila
+    db_password: "{{ vault_db_passwords.manila }}"
+
+- name: Install manila-api and manila-scheduler
+  ansible.builtin.apt:
+    name: [manila-api, manila-scheduler, python3-manilaclient]
+    state: present
+
+- name: Manila configuration
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manila_conf.yml
+
+- name: Keep manila-api on the API bind address if it is packaged for Apache
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [8786]
+
+- name: manila-manage db sync
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: manila
+    manage_cmds: ["manila-manage db sync"]
+
+- name: Enable Manila services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [manila-api, manila-scheduler]
+
+- name: Restart Manila before publishing the port
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish Manila through nginx (8786)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: manila-api
+    stream_ports: [8786]
+
+- name: Apply nginx changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Manila API
+  ansible.builtin.uri:
+    url: "https://{{ controller_fqdn }}:8786/"
+    ca_path: "{{ tls_ca }}"
+    status_code: [200, 300]
+  register: _manila
+  until: _manila.status in [200, 300]
+  retries: 20
+  delay: 3
+
+- name: Share type default_share_type (Server World 44)
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      if ! openstack share type show default_share_type >/dev/null 2>&1; then
+        openstack share type create default_share_type False
+        echo CHANGED
+      fi
+    executable: /bin/bash
+  register: _stype
+  changed_when: "'CHANGED' in _stype.stdout"
+  run_once: true

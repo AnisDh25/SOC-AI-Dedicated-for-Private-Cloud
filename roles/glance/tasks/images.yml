@@ -1,0 +1,72 @@
+---
+# Server World (06) Add VM Images. Included with run_once: the image is
+# uploaded once, whatever the number of controllers.
+- name: Image cache directory
+  ansible.builtin.file:
+    path: /var/cache/openstack-images
+    state: directory
+    mode: "0755"
+
+- name: Download the Ubuntu 24.04 cloud image
+  ansible.builtin.get_url:
+    url: "{{ glance_image_url }}"
+    dest: "/var/cache/openstack-images/{{ glance_image_url | basename }}"
+    mode: "0644"
+  register: _img
+
+- name: Enable SSH password login inside the image (optional, Server World 06)
+  when: glance_customize_image | bool
+  block:
+    - name: Check whether the image was already customized
+      ansible.builtin.stat:
+        path: "/var/cache/openstack-images/{{ glance_image_url | basename }}.customized"
+      register: _custom
+
+    - name: Mount, edit cloud.cfg and unmount
+      when: not _custom.stat.exists
+      block:
+        - name: Load nbd
+          community.general.modprobe:
+            name: nbd
+            params: max_part=8
+        - name: Connect the image
+          ansible.builtin.command: "qemu-nbd --connect=/dev/nbd0 /var/cache/openstack-images/{{ glance_image_url | basename }}"
+          changed_when: true
+        - name: Mount the root partition
+          ansible.posix.mount:
+            path: /mnt
+            src: /dev/nbd0p1
+            fstype: ext4
+            state: ephemeral
+        - name: ssh_pwauth true
+          ansible.builtin.lineinfile:
+            path: /mnt/etc/cloud/cloud.cfg
+            line: "ssh_pwauth: true"
+            insertbefore: BOF
+        - name: Unlock the default user password
+          ansible.builtin.replace:
+            path: /mnt/etc/cloud/cloud.cfg
+            regexp: '(\n\s+default_user:\n\s+name: ubuntu\n\s+)lock_passwd: True'
+            replace: '\1lock_passwd: False'
+      always:
+        - name: Unmount the image
+          ansible.posix.mount:
+            path: /mnt
+            state: unmounted
+        - name: Disconnect nbd
+          ansible.builtin.command: qemu-nbd --disconnect /dev/nbd0
+          changed_when: true
+        - name: Mark the image as customized
+          ansible.builtin.file:
+            path: "/var/cache/openstack-images/{{ glance_image_url | basename }}.customized"
+            state: touch
+            mode: "0644"
+
+- name: Upload the image to Glance
+  openstack.cloud.image:
+    name: "{{ glance_image_name }}"
+    filename: "/var/cache/openstack-images/{{ glance_image_url | basename }}"
+    disk_format: qcow2
+    container_format: bare
+    is_public: true
+    state: present

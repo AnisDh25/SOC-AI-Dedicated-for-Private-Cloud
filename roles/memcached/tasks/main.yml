@@ -1,0 +1,22 @@
+---
+# Server World (02): Memcached listening on the management IP.
+- name: Install Memcached
+  ansible.builtin.apt:
+    name: [memcached, python3-pymemcache]
+    state: present
+
+- name: Listen on the management IP
+  ansible.builtin.lineinfile:
+    path: /etc/memcached.conf
+    regexp: '^-l\s'
+    line: "-l {{ mgmt_ip }}"
+  notify: restart memcached
+
+- name: Enable Memcached
+  ansible.builtin.systemd_service:
+    name: memcached
+    state: started
+    enabled: true
+
+- name: Apply Memcached changes now
+  ansible.builtin.meta: flush_handlers

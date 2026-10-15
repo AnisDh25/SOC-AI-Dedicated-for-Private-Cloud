@@ -1,0 +1,90 @@
+---
+# Server World flamingo4 (48)(49), reduced to the OVN provider driver:
+# no amphora image, no health-manager/housekeeping/worker, no lb-mgmt network.
+
+- name: Register Octavia in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: octavia
+    ks_password: "{{ vault_service_passwords.octavia }}"
+    ks_services:
+      - {name: octavia, type: load-balancer, description: OpenStack LBaaS, url: "https://{{ network_fqdn }}:9876"}
+
+- name: Octavia database
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [octavia]
+    db_user: octavia
+    db_password: "{{ vault_db_passwords.octavia }}"
+
+- name: Install Octavia API, driver agent and the OVN provider
+  ansible.builtin.apt:
+    name: [octavia-api, octavia-driver-agent, python3-ovn-octavia-provider, python3-octaviaclient]
+    state: present
+
+- name: octavia.conf and policy.yaml
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/octavia/{{ item }}"
+    owner: root
+    group: octavia
+    mode: "0640"
+  loop: [octavia.conf, policy.yaml]
+  notify: restart octavia
+
+- name: Detect how octavia-api is packaged
+  ansible.builtin.stat:
+    path: /etc/apache2/sites-available/octavia-api.conf
+  register: _octavia_site
+
+- name: Octavia units to restart
+  ansible.builtin.set_fact:
+    octavia_units: "{{ (['apache2'] if _octavia_site.stat.exists else ['octavia-api']) + ['octavia-driver-agent'] }}"
+
+- name: Keep octavia-api on the API bind address if it runs under Apache
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [9876]
+
+- name: octavia-db-manage upgrade head
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: octavia
+    manage_cmds: ["octavia-db-manage --config-file /etc/octavia/octavia.conf upgrade head"]
+
+- name: Stop amphora-only services if the packages pulled them in
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: [octavia-health-manager, octavia-housekeeping, octavia-worker]
+  failed_when: false
+
+- name: Enable Octavia services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: "{{ octavia_units }}"
+
+- name: Restart Octavia before publishing the port
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish Octavia through nginx (9876)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: octavia-api
+    stream_ports: [9876]
+
+- name: Apply nginx changes
+  ansible.builtin.meta: flush_handlers

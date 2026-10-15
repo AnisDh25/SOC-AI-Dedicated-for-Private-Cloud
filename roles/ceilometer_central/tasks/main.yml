@@ -1,0 +1,54 @@
+---
+# Server World flamingo4 (53) Configure Ceilometer (Network Node).
+
+- name: Register Ceilometer in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: ceilometer
+    ks_password: "{{ vault_service_passwords.ceilometer }}"
+    ks_services:
+      - {name: ceilometer, type: metering, description: OpenStack Telemetry Service}
+
+- name: Coordination database for the central agents (HA)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [tooz]
+    db_user: tooz
+    db_password: "{{ vault_db_passwords.tooz }}"
+  when: ha_enabled | bool
+
+- name: Install Ceilometer central and notification agents
+  ansible.builtin.apt:
+    name: [ceilometer-agent-central, ceilometer-agent-notification]
+    state: present
+
+- name: ceilometer.conf
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/ceilometer.conf.j2"
+    dest: /etc/ceilometer/ceilometer.conf
+    owner: root
+    group: ceilometer
+    mode: "0640"
+  notify: restart ceilometer
+
+- name: ceilometer-upgrade (creates Gnocchi resource types)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: ceilometer
+    manage_cmds: ["ceilometer-upgrade"]
+
+- name: Enable Ceilometer agents
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [ceilometer-agent-central, ceilometer-agent-notification]
+
+- name: Apply changes
+  ansible.builtin.meta: flush_handlers

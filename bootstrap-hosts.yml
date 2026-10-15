@@ -1,0 +1,48 @@
+---
+# Give every lab VM its own hostname and the same /etc/hosts.
+#   ansible-playbook -i inventory/lab-bootstrap.yml bootstrap-hosts.yml -K
+# Hostname = short inventory name (controller01), FQDN = inventory name
+# (controller01.tekup.world), both resolving to the host's mgmt_ip.
+- name: Hostnames and /etc/hosts for all lab VMs
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Set the hostname
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname_short }}"
+
+    - name: Is cloud-init installed?
+      ansible.builtin.stat:
+        path: /etc/cloud/cloud.cfg.d
+      register: _cloudinit
+
+    - name: Keep the hostname and /etc/hosts across reboots (cloud-init)
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+        content: |
+          preserve_hostname: true
+          manage_etc_hosts: false
+        mode: "0644"
+      when: _cloudinit.stat.exists
+
+    - name: Drop the old 127.0.1.1 hostname line (the FQDN must resolve to mgmt_ip)
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s'
+        state: absent
+
+    - name: Every lab VM in /etc/hosts
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE MANAGED LAB HOSTS"
+        insertafter: '^127\.0\.0\.1\s'
+        block: |
+          {% for h in groups['all'] %}
+          {{ hostvars[h].mgmt_ip }} {{ h }} {{ h.split('.')[0] }}
+          {% endfor %}
+
+    - name: Check that every name resolves
+      ansible.builtin.command: "getent hosts {{ item }}"
+      loop: "{{ groups['all'] }}"
+      changed_when: false

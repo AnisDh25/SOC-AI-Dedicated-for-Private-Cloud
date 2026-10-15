@@ -1,0 +1,185 @@
+---
+# Server World flamingo3 (38) Swift control node, (39) proxy node, (41) swift user.
+
+- name: Register Swift in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: swift
+    ks_password: "{{ vault_service_passwords.swift }}"
+    ks_services:
+      - name: swift
+        type: object-store
+        description: OpenStack Object Storage
+        url: "https://{{ swift_proxy_fqdn }}:8080/v1/AUTH_%(tenant_id)s"
+        admin_url: "https://{{ swift_proxy_fqdn }}:8080/v1"
+
+- name: Swift test identities (Server World 41)
+  run_once: true
+  delegate_to: "{{ controller_host }}"
+  block:
+    - name: Project {{ swift_project }}
+      openstack.cloud.project:
+        name: "{{ swift_project }}"
+        domain: default
+        description: Swift Service Project
+    - name: Role swiftoperator
+      openstack.cloud.identity_role:
+        name: swiftoperator
+    - name: User {{ swift_user }}
+      openstack.cloud.identity_user:
+        name: "{{ swift_user }}"
+        password: "{{ vault_swiftuser_password }}"
+        domain: default
+        default_project: "{{ swift_project }}"
+        update_password: on_create
+      no_log: true
+    - name: swiftoperator for {{ swift_user }}
+      openstack.cloud.role_assignment:
+        user: "{{ swift_user }}"
+        project: "{{ swift_project }}"
+        role: swiftoperator
+    - name: keystonerc_swift
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/templates/keystonerc.j2"
+        dest: /root/keystonerc_swift
+        mode: "0600"
+      vars:
+        rc_project: "{{ swift_project }}"
+        rc_user: "{{ swift_user }}"
+        rc_password: "{{ vault_swiftuser_password }}"
+        rc_ps1: swift
+
+- name: Install the Swift proxy
+  ansible.builtin.apt:
+    name: [swift, swift-proxy, python3-swiftclient, python3-keystonemiddleware, python3-memcache]
+    state: present
+
+- name: /etc/swift
+  ansible.builtin.file:
+    path: /etc/swift
+    state: directory
+    owner: root
+    group: swift
+    mode: "0755"
+
+- name: proxy-server.conf and swift.conf
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/etc/swift/{{ item.dest }}"
+    owner: root
+    group: swift
+    mode: "0640"
+  loop:
+    - {src: proxy-server.conf.j2, dest: proxy-server.conf}
+    - {src: "{{ playbook_dir }}/templates/swift.conf.j2", dest: swift.conf}
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: restart swift-proxy
+
+# ---- Rings (built on the first proxy only) ---------------------------------
+- name: Ring definitions
+  ansible.builtin.set_fact:
+    _swift_rings:
+      - {name: account, port: 6002}
+      - {name: container, port: 6001}
+      - {name: object, port: 6000}
+
+- name: Collect storage devices (one zone per storage host)
+  ansible.builtin.set_fact:
+    _swift_hosts: >-
+      {{ _swift_hosts | default([]) + [{'host': item, 'ip': hostvars[item].mgmt_ip, 'zone': idx + 1,
+         'devices': hostvars[item].swift_devices | map(attribute='name') | list}] }}
+  loop: "{{ groups['swift_storage'] }}"
+  loop_control:
+    index_var: idx
+
+- name: Build rings
+  when: inventory_hostname == swift_proxy_host
+  block:
+    - name: Create ring builders
+      ansible.builtin.command: >-
+        swift-ring-builder /etc/swift/{{ item.name }}.builder create
+        {{ swift_partition_power }} {{ [3, _swift_hosts | subelements('devices') | length] | min }} 1
+      args:
+        creates: "/etc/swift/{{ item.name }}.builder"
+      loop: "{{ _swift_rings }}"
+
+    - name: Look up devices in the rings
+      ansible.builtin.command: >-
+        swift-ring-builder /etc/swift/{{ item.0.name }}.builder search
+        --ip {{ item.1.0.ip }} --port {{ item.0.port }} --device {{ item.1.1 }}
+      loop: "{{ _swift_rings | product(_swift_hosts | subelements('devices')) | list }}"
+      loop_control:
+        label: "{{ item.0.name }} {{ item.1.0.host }}/{{ item.1.1 }}"
+      register: _ring_search
+      changed_when: false
+      failed_when: false
+
+    - name: Add missing devices
+      ansible.builtin.command: >-
+        swift-ring-builder /etc/swift/{{ item.item.0.name }}.builder add
+        r1z{{ item.item.1.0.zone }}-{{ item.item.1.0.ip }}:{{ item.item.0.port }}/{{ item.item.1.1 }} 100
+      loop: "{{ _ring_search.results | rejectattr('rc', 'equalto', 0) | list }}"
+      loop_control:
+        label: "{{ item.item.0.name }} {{ item.item.1.0.host }}/{{ item.item.1.1 }}"
+      register: _ring_add
+
+    - name: Check for ring files
+      ansible.builtin.stat:
+        path: "/etc/swift/{{ item.name }}.ring.gz"
+      loop: "{{ _swift_rings }}"
+      register: _ring_files
+
+    - name: Rebalance rings
+      ansible.builtin.command: "swift-ring-builder /etc/swift/{{ item.name }}.builder rebalance"
+      loop: "{{ _swift_rings }}"
+      register: _rebalance
+      failed_when: _rebalance.rc > 1
+      when: _ring_add is changed or (_ring_files.results | rejectattr('stat.exists') | list | length > 0)
+      notify: restart swift-proxy
+
+    - name: Fetch rings to the control machine
+      ansible.builtin.fetch:
+        src: "/etc/swift/{{ item.name }}.ring.gz"
+        dest: "{{ playbook_dir }}/.swift-rings/"
+        flat: true
+      loop: "{{ _swift_rings }}"
+
+- name: Rings on additional proxies
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/.swift-rings/{{ item.name }}.ring.gz"
+    dest: "/etc/swift/{{ item.name }}.ring.gz"
+    mode: "0644"
+  loop: "{{ _swift_rings }}"
+  when: inventory_hostname != swift_proxy_host
+  notify: restart swift-proxy
+
+- name: Ring ownership
+  ansible.builtin.file:
+    path: "/etc/swift/{{ item.name }}.ring.gz"
+    owner: swift
+    group: swift
+  loop: "{{ _swift_rings }}"
+
+# ---- Proxy service + TLS --------------------------------------------------
+- name: Enable swift-proxy
+  ansible.builtin.systemd_service:
+    name: swift-proxy
+    state: started
+    enabled: true
+
+- name: Restart swift-proxy now
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish the Swift proxy through nginx (8080)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: swift-proxy
+    stream_ports: [8080]
+
+- name: Apply nginx changes
+  ansible.builtin.meta: flush_handlers

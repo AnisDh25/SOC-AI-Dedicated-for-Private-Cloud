@@ -1,0 +1,49 @@
+---
+# Copy to vault.yml, replace every CHANGE_ME value, then encrypt it:
+#   cp vault.yml.example vault.yml
+#   ansible-vault encrypt vault.yml        (or: python scripts/vault_encrypt.py ...)
+# Keep values alphanumeric: they are embedded in DB / RabbitMQ URLs.
+# vault_barbican_kek must be base64 of 32 random bytes: openssl rand -base64 32
+# vault_keepalived_password: at most 8 characters are used.
+vault_admin_password: CHANGE_ME_ADMIN_PASSWORD
+vault_rabbit_password: CHANGE_ME_RABBIT_PASSWORD
+vault_metadata_secret: CHANGE_ME_METADATA_SECRET
+vault_db_passwords:
+  keystone: CHANGE_ME_DB_PASSWORDS_KEYSTONE
+  glance: CHANGE_ME_DB_PASSWORDS_GLANCE
+  nova: CHANGE_ME_DB_PASSWORDS_NOVA
+  placement: CHANGE_ME_DB_PASSWORDS_PLACEMENT
+  neutron: CHANGE_ME_DB_PASSWORDS_NEUTRON
+  cinder: CHANGE_ME_DB_PASSWORDS_CINDER
+  heat: CHANGE_ME_DB_PASSWORDS_HEAT
+  barbican: CHANGE_ME_DB_PASSWORDS_BARBICAN
+  manila: CHANGE_ME_DB_PASSWORDS_MANILA
+  designate: CHANGE_ME_DB_PASSWORDS_DESIGNATE
+  octavia: CHANGE_ME_DB_PASSWORDS_OCTAVIA
+  gnocchi: CHANGE_ME_DB_PASSWORDS_GNOCCHI
+  tooz: CHANGE_ME_DB_PASSWORDS_TOOZ
+  cloudkitty: CHANGE_ME_DB_PASSWORDS_CLOUDKITTY
+vault_service_passwords:
+  glance: CHANGE_ME_SERVICE_PASSWORDS_GLANCE
+  nova: CHANGE_ME_SERVICE_PASSWORDS_NOVA
+  placement: CHANGE_ME_SERVICE_PASSWORDS_PLACEMENT
+  neutron: CHANGE_ME_SERVICE_PASSWORDS_NEUTRON
+  cinder: CHANGE_ME_SERVICE_PASSWORDS_CINDER
+  heat: CHANGE_ME_SERVICE_PASSWORDS_HEAT
+  barbican: CHANGE_ME_SERVICE_PASSWORDS_BARBICAN
+  swift: CHANGE_ME_SERVICE_PASSWORDS_SWIFT
+  manila: CHANGE_ME_SERVICE_PASSWORDS_MANILA
+  designate: CHANGE_ME_SERVICE_PASSWORDS_DESIGNATE
+  octavia: CHANGE_ME_SERVICE_PASSWORDS_OCTAVIA
+  gnocchi: CHANGE_ME_SERVICE_PASSWORDS_GNOCCHI
+  ceilometer: CHANGE_ME_SERVICE_PASSWORDS_CEILOMETER
+  cloudkitty: CHANGE_ME_SERVICE_PASSWORDS_CLOUDKITTY
+vault_heat_domain_admin_password: CHANGE_ME_HEAT_DOMAIN_ADMIN_PASSWORD
+vault_barbican_kek: CHANGE_ME_BARBICAN_KEK
+vault_swift_hash_prefix: CHANGE_ME_SWIFT_HASH_PREFIX
+vault_swift_hash_suffix: CHANGE_ME_SWIFT_HASH_SUFFIX
+vault_horizon_secret_key: CHANGE_ME_HORIZON_SECRET_KEY
+vault_demo_user_password: CHANGE_ME_DEMO_USER_PASSWORD
+vault_swiftuser_password: CHANGE_ME_SWIFTUSER_PASSWORD
+vault_rabbit_erlang_cookie: CHANGE_ME_RABBIT_ERLANG_COOKIE
+vault_keepalived_password: CHANGE_ME_KEEPALIVED_PASSWORD

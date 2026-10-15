@@ -1,0 +1,25 @@
+---
+# Create MariaDB database(s) and grant a user ALL on them (on the controller).
+# vars: db_names (list), db_user, db_password, db_encoding (opt), db_collation (opt)
+- name: "Create database(s) {{ db_names | join(', ') }}"
+  community.mysql.mysql_db:
+    name: "{{ item }}"
+    encoding: "{{ db_encoding | default(omit) }}"
+    collation: "{{ db_collation | default(omit) }}"
+    login_unix_socket: /run/mysqld/mysqld.sock
+  loop: "{{ db_names }}"
+  delegate_to: "{{ controller_host }}"
+  run_once: true
+
+- name: "Grant {{ db_user }} on {{ db_names | join(', ') }}"
+  community.mysql.mysql_user:
+    name: "{{ db_user }}"
+    host: "{{ item }}"
+    password: "{{ db_password }}"
+    priv: "{{ db_names | map('regex_replace', '$', '.*:ALL') | join('/') }}"
+    append_privs: true
+    login_unix_socket: /run/mysqld/mysqld.sock
+  loop: [localhost, "%"]
+  delegate_to: "{{ controller_host }}"
+  run_once: true
+  no_log: true

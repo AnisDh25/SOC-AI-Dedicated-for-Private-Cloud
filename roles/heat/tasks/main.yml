@@ -1,0 +1,123 @@
+---
+# Server World flamingo3 (33) Heat control node, (34) Heat network node.
+
+- name: Register Heat in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: heat
+    ks_password: "{{ vault_service_passwords.heat }}"
+    ks_services:
+      - {name: heat, type: orchestration, description: Openstack Orchestration, url: "http://{{ network_fqdn }}:8004/v1/%(tenant_id)s"}
+      - {name: heat-cfn, type: cloudformation, description: Openstack Orchestration, url: "http://{{ network_fqdn }}:8000/v1"}
+
+- name: Heat identities
+  run_once: true
+  delegate_to: "{{ controller_host }}"
+  block:
+    - name: Roles heat_stack_owner / heat_stack_user
+      openstack.cloud.identity_role:
+        name: "{{ item }}"
+      loop: [heat_stack_owner, heat_stack_user]
+
+    - name: heat_stack_owner for admin and the demo user
+      openstack.cloud.role_assignment:
+        user: "{{ item.user }}"
+        project: "{{ item.project }}"
+        role: heat_stack_owner
+      loop:
+        - {user: admin, project: admin}
+        - {user: "{{ demo_user }}", project: "{{ demo_project }}"}
+
+    - name: Domain heat
+      openstack.cloud.identity_domain:
+        name: heat
+        description: Stack projects and users
+
+    - name: heat_domain_admin user
+      openstack.cloud.identity_user:
+        name: heat_domain_admin
+        password: "{{ vault_heat_domain_admin_password }}"
+        domain: heat
+        update_password: on_create
+      no_log: true
+
+    - name: heat_domain_admin is admin of domain heat
+      ansible.builtin.command: >-
+        openstack role add --domain heat --user heat_domain_admin --user-domain heat admin
+      changed_when: false
+
+- name: Heat database
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [heat]
+    db_user: heat
+    db_password: "{{ vault_db_passwords.heat }}"
+
+- name: Install Heat
+  ansible.builtin.apt:
+    name: [heat-api, heat-api-cfn, heat-engine, python3-heatclient, python3-vitrageclient, python3-zunclient]
+    state: present
+
+- name: heat.conf
+  ansible.builtin.template:
+    src: heat.conf.j2
+    dest: /etc/heat/heat.conf
+    owner: root
+    group: heat
+    mode: "0640"
+  notify: restart heat
+
+- name: Find the heat-api Apache site
+  ansible.builtin.stat:
+    path: /etc/apache2/sites-available/heat-api.conf
+  register: _heat_site
+
+- name: heat-api WSGI script (Server World 34, line 6)
+  ansible.builtin.replace:
+    path: /etc/apache2/sites-available/heat-api.conf
+    regexp: '^(\s*)WSGIScriptAlias\s+/\s+\S+'
+    replace: '\1WSGIScriptAlias / /usr/bin/heat-wsgi-api'
+  when: _heat_site.stat.exists
+  notify: restart heat
+
+- name: heat-manage db_sync
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: heat
+    manage_cmds: ["heat-manage db_sync"]
+
+- name: Enable heat-engine
+  ansible.builtin.systemd_service:
+    name: heat-engine
+    state: started
+    enabled: true
+
+- name: Bind heat-api/heat-api-cfn to the management IP (HA)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [8004, 8000]
+  when: ha_enabled | bool
+
+- name: Apply changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish Heat on the VIP (plain HTTP, like the guide's endpoints)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: heat-api
+    stream_ports: [8004, 8000]
+    stream_mode: plain
+  when: ha_enabled | bool
+
+- name: Apply HAProxy changes
+  ansible.builtin.meta: flush_handlers

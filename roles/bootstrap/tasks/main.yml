@@ -1,0 +1,46 @@
+---
+# Server World (13) Add Users and (14) Add Flavors.
+
+- name: Demo project
+  openstack.cloud.project:
+    name: "{{ demo_project }}"
+    domain: default
+    description: Hiroshima Project
+
+- name: Demo user
+  openstack.cloud.identity_user:
+    name: "{{ demo_user }}"
+    password: "{{ vault_demo_user_password }}"
+    domain: default
+    default_project: "{{ demo_project }}"
+    update_password: on_create
+  no_log: true
+
+- name: Demo user is member of the demo project
+  openstack.cloud.role_assignment:
+    user: "{{ demo_user }}"
+    project: "{{ demo_project }}"
+    role: member
+
+- name: keystonerc for the demo user
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/keystonerc.j2"
+    dest: "/root/keystonerc_{{ demo_user }}"
+    mode: "0600"
+  vars:
+    rc_project: "{{ demo_project }}"
+    rc_user: "{{ demo_user }}"
+    rc_password: "{{ vault_demo_user_password }}"
+
+- name: Flavors
+  openstack.cloud.compute_flavor:
+    name: "{{ item.name }}"
+    id: "{{ item.id }}"
+    vcpus: "{{ item.vcpus }}"
+    ram: "{{ item.ram }}"
+    disk: "{{ item.disk }}"
+    ephemeral: "{{ item.ephemeral | default(0) }}"
+    is_public: true
+  loop: "{{ flavors }}"
+  loop_control:
+    label: "{{ item.name }}"

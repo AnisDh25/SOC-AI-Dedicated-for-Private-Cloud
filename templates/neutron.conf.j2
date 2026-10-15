@@ -1,0 +1,54 @@
+# {{ ansible_managed }}
+# Server World (11) / flamingo2 (23)(24): network (server) and compute variants.
+[DEFAULT]
+{% if is_network | bool %}
+bind_host = {{ api_bind_host }}
+bind_port = 9696
+{% endif %}
+core_plugin = ml2
+service_plugins = ovn-router
+auth_strategy = keystone
+state_path = /var/lib/neutron
+allow_overlapping_ips = True
+{% if is_network | bool %}
+notify_nova_on_port_status_changes = True
+notify_nova_on_port_data_changes = True
+{% endif %}
+transport_url = {{ rabbit_url }}
+
+[agent]
+root_helper = sudo /usr/bin/neutron-rootwrap /etc/neutron/rootwrap.conf
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = neutron
+password = {{ vault_service_passwords.neutron }}
+insecure = false
+{% if is_network | bool %}
+
+[database]
+connection = mysql+pymysql://neutron:{{ vault_db_passwords.neutron }}@{{ controller_fqdn }}:3306/neutron_ml2
+
+[nova]
+auth_url = {{ keystone_url }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+region_name = {{ region }}
+project_name = service
+username = nova
+password = {{ vault_service_passwords.nova }}
+insecure = false
+{% endif %}
+
+[oslo_concurrency]
+lock_path = $state_path/tmp
+
+[oslo_policy]
+enforce_new_defaults = true

@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+[galera]
+wsrep_on = ON
+wsrep_provider = /usr/lib/galera/libgalera_smm.so
+wsrep_cluster_name = openstack
+wsrep_cluster_address = gcomm://{{ controller_ips | join(',') }}
+wsrep_node_address = {{ mgmt_ip }}
+wsrep_node_name = {{ inventory_hostname_short }}
+wsrep_sst_method = rsync
+binlog_format = row
+default_storage_engine = InnoDB
+innodb_autoinc_lock_mode = 2
+bind-address = {{ mgmt_ip }}
+# Tolerate VMs that freeze for seconds (host swapping, Wi-Fi bridging):
+# a node is only suspected after 30s and evicted after 60s, instead of the
+# default 5s/15s that made the cluster drop to NON_PRIMARY in the lab.
+# Rule: keepalive_period <= inactive_check_period <= suspect_timeout
+#       <= inactive_timeout, and install_timeout <= inactive_timeout.
+wsrep_provider_options = "{{ galera_provider_options }}"

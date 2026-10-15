@@ -1,0 +1,7 @@
+.swift-rings/
+openstack-lab-ca.crt
+*.retry
+
+# Real secrets never go to git (see vault.yml.example)
+inventory/group_vars/all/vault.yml
+deploy-*.log

@@ -1,0 +1,128 @@
+---
+# Server World (07) Nova #1 and (08) Nova #2 (controller services).
+
+- name: Register Nova in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: nova
+    ks_password: "{{ vault_service_passwords.nova }}"
+    ks_services:
+      - {name: nova, type: compute, description: OpenStack Compute service, url: "https://{{ controller_fqdn }}:8774/v2.1/%(tenant_id)s"}
+
+- name: Nova databases
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [nova, nova_api, nova_cell0]
+    db_user: nova
+    db_password: "{{ vault_db_passwords.nova }}"
+
+- name: Install Nova controller services
+  ansible.builtin.apt:
+    name: [nova-api, nova-conductor, nova-scheduler, nova-novncproxy, python3-novaclient]
+    state: present
+
+- name: nova.conf
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/nova.conf.j2"
+    dest: /etc/nova/nova.conf
+    owner: root
+    group: nova
+    mode: "0640"
+  notify: restart nova
+
+- name: Bind nova-api to the API bind address:8774
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [8774]
+
+- name: nova-api WSGI alias (Server World 08, line 29)
+  ansible.builtin.replace:
+    path: /etc/apache2/sites-available/nova-api.conf
+    regexp: '^Alias\s+/nova-api\s+\S+'
+    replace: 'Alias /nova-api /usr/bin/nova-api-wsgi'
+  notify: restart apache2
+
+- name: Nova metadata API on {{ api_bind_host }}:8775 (Server World 08)
+  ansible.builtin.blockinfile:
+    path: /etc/apache2/sites-available/nova-api.conf
+    marker: "# {mark} ANSIBLE MANAGED NOVA METADATA"
+    insertafter: EOF
+    block: |
+      Listen {{ api_bind_host }}:8775
+      <VirtualHost *:8775>
+          WSGIScriptAlias / /usr/bin/nova-metadata-wsgi
+          WSGIDaemonProcess nova-api-metadata processes=5 threads=1 user=nova group=nova display-name=%{GROUP}
+          WSGIProcessGroup nova-api-metadata
+          WSGIApplicationGroup %{GLOBAL}
+          WSGIPassAuthorization On
+          LimitRequestBody 114688
+          ErrorLogFormat "%{cu}t %M"
+          ErrorLog /var/log/apache2/nova_metadata_error.log
+          CustomLog /var/log/apache2/nova_metadata_access.log combined
+          <Directory /usr/bin>
+              Require all granted
+          </Directory>
+      </VirtualHost>
+
+      Alias /nova-metadata-api /usr/bin/nova-metadata-wsgi
+      <Location /nova-metadata-api>
+        SetHandler wsgi-script
+        Options +ExecCGI
+        WSGIProcessGroup nova-api-metadata
+        WSGIApplicationGroup %{GLOBAL}
+        WSGIPassAuthorization On
+      </Location>
+  notify: restart apache2
+
+- name: Nova database migrations and cell setup
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: nova
+    manage_cmds:
+      - nova-manage api_db sync
+      - nova-manage cell_v2 map_cell0
+      - nova-manage db sync
+
+- name: List Nova cells
+  ansible.builtin.command:
+    argv: [su, -s, /bin/sh, -c, "nova-manage cell_v2 list_cells", nova]
+  register: _cells
+  changed_when: false
+  run_once: true
+
+- name: Create cell1
+  ansible.builtin.command:
+    argv: [su, -s, /bin/sh, -c, "nova-manage cell_v2 create_cell --name cell1", nova]
+  when: "' cell1 ' not in _cells.stdout"
+  changed_when: true
+  run_once: true
+
+- name: Enable Nova controller services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [nova-conductor, nova-scheduler, nova-novncproxy]
+
+- name: Restart Apache/Nova before publishing the ports
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish Nova API, metadata and noVNC through nginx
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: nova
+    stream_ports: [8774, 8775, 6080]
+    stream_balance: source   # noVNC websockets must stay on one controller
+
+- name: Apply nginx changes
+  ansible.builtin.meta: flush_handlers

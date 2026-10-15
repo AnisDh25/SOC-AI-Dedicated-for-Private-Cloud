@@ -1,0 +1,26 @@
+heat_template_version: 2021-04-16
+
+description: Heat Sample Template (Server World 35)
+
+parameters:
+  ImageID:
+    type: string
+    description: Image used to boot a server
+  NetID:
+    type: string
+    description: Network ID for the server
+
+resources:
+  server1:
+    type: OS::Nova::Server
+    properties:
+      name: "Heat_Deployed_Server"
+      image: { get_param: ImageID }
+      flavor: "m1.small"
+      networks:
+        - network: { get_param: NetID }
+
+outputs:
+  server1_private_ip:
+    description: IP address of the server in the private network
+    value: { get_attr: [server1, first_address] }

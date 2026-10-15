@@ -1,0 +1,48 @@
+---
+# Files shared by neutron_server and neutron_ovn_chassis.
+- name: neutron.conf and ml2_conf.ini
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: neutron
+    mode: "0640"
+  loop:
+    - {src: neutron.conf.j2, dest: /etc/neutron/neutron.conf}
+    - {src: ml2_conf.ini.j2, dest: /etc/neutron/plugins/ml2/ml2_conf.ini}
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: restart neutron
+
+- name: plugin.ini symlink
+  ansible.builtin.file:
+    src: /etc/neutron/plugins/ml2/ml2_conf.ini
+    dest: /etc/neutron/plugin.ini
+    state: link
+
+- name: DHCP agent settings
+  community.general.ini_file:
+    path: /etc/neutron/dhcp_agent.ini
+    section: DEFAULT
+    option: "{{ item.key }}"
+    value: "{{ item.value }}"
+  loop: "{{ {'dhcp_driver': 'neutron.agent.linux.dhcp.Dnsmasq', 'enable_isolated_metadata': 'True', 'enable_metadata_network': 'True'} | dict2items }}"
+  notify: restart neutron
+
+- name: Open vSwitch OVSDB remote on 127.0.0.1:6640
+  ansible.builtin.lineinfile:
+    path: /etc/default/openvswitch-switch
+    regexp: '^#?\s*OVS_CTL_OPTS='
+    line: >-
+      OVS_CTL_OPTS="--ovsdb-server-options='--remote=ptcp:6640:127.0.0.1'"
+  notify: restart openvswitch
+
+- name: Look for the legacy neutron-metadata-agent
+  ansible.builtin.service_facts:
+
+- name: Disable neutron-metadata-agent (replaced by the OVN metadata agent)
+  ansible.builtin.systemd_service:
+    name: neutron-metadata-agent
+    state: stopped
+    enabled: false
+  when: "'neutron-metadata-agent.service' in ansible_facts.services"

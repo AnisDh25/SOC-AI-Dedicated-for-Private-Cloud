@@ -1,0 +1,71 @@
+---
+# Server World flamingo2 (28)(29) LVM backend, flamingo3 (30)(31) NFS / multi-backend.
+
+- name: Check the Cinder LVM disk
+  ansible.builtin.stat:
+    path: "{{ cinder_lvm_device }}"
+  register: _cinder_disk
+
+- name: Fail when the Cinder LVM disk is missing
+  ansible.builtin.assert:
+    that: _cinder_disk.stat.exists
+    fail_msg: "cinder_lvm_device {{ cinder_lvm_device }} does not exist on {{ inventory_hostname }}"
+
+- name: Install cinder-volume and the LIO iSCSI target
+  ansible.builtin.apt:
+    name: [cinder-volume, python3-mysqldb, targetcli-fb, python3-rtslib-fb, lvm2, thin-provisioning-tools]
+    state: present
+
+- name: NFS client
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nfs_client.yml
+  when: enable_cinder_nfs | bool or enable_cinder_backup | bool
+
+- name: Volume group {{ cinder_vg }}
+  community.general.lvg:
+    vg: "{{ cinder_vg }}"
+    pvs: ["{{ cinder_lvm_device }}"]
+    pesize: 32M
+
+- name: cinder.conf
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/cinder.conf.j2"
+    dest: /etc/cinder/cinder.conf
+    owner: root
+    group: cinder
+    mode: "0640"
+  notify: restart cinder
+
+- name: NFS shares file
+  ansible.builtin.copy:
+    dest: /etc/cinder/nfs_shares
+    content: "{{ nfs_fqdn }}:{{ nfs_share_path }}\n"
+    owner: root
+    group: cinder
+    mode: "0640"
+  when: enable_cinder_nfs | bool
+  notify: restart cinder
+
+- name: Enable cinder-volume
+  ansible.builtin.systemd_service:
+    name: cinder-volume
+    state: started
+    enabled: true
+
+- name: Restart cinder-volume now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the NFS backend mount
+  ansible.builtin.command: findmnt -n -t nfs,nfs4 -o TARGET
+  register: _nfs_mounts
+  until: "'/var/lib/cinder/mnt_nfs' in _nfs_mounts.stdout"
+  retries: 12
+  delay: 5
+  changed_when: false
+  when: enable_cinder_nfs | bool
+
+- name: Give cinder ownership of the NFS mount (Server World 30)
+  ansible.builtin.command: chown -R cinder:cinder /var/lib/cinder/mnt_nfs
+  changed_when: false
+  when: enable_cinder_nfs | bool

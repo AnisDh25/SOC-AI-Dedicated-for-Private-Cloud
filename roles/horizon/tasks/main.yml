@@ -1,0 +1,108 @@
+---
+# Horizon dashboard. Server World's Flamingo series has no Horizon page;
+# this follows the standard Ubuntu openstack-dashboard setup.
+
+- name: Install Horizon and dashboard plugins for enabled services
+  ansible.builtin.apt:
+    name: >-
+      {{ ['openstack-dashboard', 'python3-pymemcache']
+         + (['python3-heat-dashboard'] if enable_heat | bool else [])
+         + (['python3-manila-ui'] if enable_manila | bool else [])
+         + (['python3-designate-dashboard'] if enable_designate | bool else [])
+         + (['python3-octavia-dashboard'] if enable_octavia | bool else []) }}
+    state: present
+
+- name: local_settings.py overrides
+  ansible.builtin.blockinfile:
+    path: /etc/openstack-dashboard/local_settings.py
+    marker: "# {mark} ANSIBLE MANAGED OPENSTACK SETTINGS"
+    insertafter: EOF
+    block: |
+      OPENSTACK_HOST = "{{ controller_fqdn }}"
+      OPENSTACK_KEYSTONE_URL = "https://%s:5000/v3" % OPENSTACK_HOST
+      ALLOWED_HOSTS = ["{{ controller_fqdn }}", "{{ controller_ip }}", "{{ fqdn }}", "{{ mgmt_ip }}", "{{ inventory_hostname_short }}", "localhost"]
+      SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+      CACHES = {
+          "default": {
+              "BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache",
+              "LOCATION": "{{ memcached_servers }}",
+          },
+      }
+      OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True
+      OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"
+      OPENSTACK_KEYSTONE_DEFAULT_ROLE = "member"
+      OPENSTACK_API_VERSIONS = {"identity": 3, "image": 2, "volume": 3}
+      OPENSTACK_SSL_CACERT = "{{ tls_ca }}"
+      OPENSTACK_SSL_NO_VERIFY = False
+      TIME_ZONE = "{{ timezone }}"
+      SECRET_KEY = "{{ vault_horizon_secret_key }}"
+      CSRF_COOKIE_SECURE = True
+      SESSION_COOKIE_SECURE = True
+      CSRF_TRUSTED_ORIGINS = ["https://{{ controller_fqdn }}", "https://{{ controller_ip }}"]
+  notify: restart apache2
+
+- name: HTTPS site with the OpenStack certificate
+  ansible.builtin.lineinfile:
+    path: /etc/apache2/sites-available/default-ssl.conf
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  loop:
+    - {regexp: '^\s*SSLCertificateFile\s', line: "\t\tSSLCertificateFile {{ tls_cert }}"}
+    - {regexp: '^\s*SSLCertificateKeyFile\s', line: "\t\tSSLCertificateKeyFile {{ tls_key }}"}
+    - {regexp: '^\s*#?\s*SSLCertificateChainFile\s', line: "\t\tSSLCertificateChainFile {{ tls_ca }}"}
+  notify: restart apache2
+
+- name: Redirect / to /horizon on HTTPS
+  ansible.builtin.lineinfile:
+    path: /etc/apache2/sites-available/default-ssl.conf
+    regexp: '^\s*RedirectMatch\s+\^/\$'
+    line: "\t\tRedirectMatch ^/$ /horizon/"
+    insertafter: '^\s*DocumentRoot'
+  notify: restart apache2
+
+- name: Redirect HTTP to HTTPS
+  ansible.builtin.lineinfile:
+    path: /etc/apache2/sites-available/000-default.conf
+    regexp: '^\s*Redirect\s+permanent\s+/\s'
+    line: "\tRedirect permanent / https://{{ controller_fqdn }}/"
+    insertafter: '^\s*DocumentRoot'
+  notify: restart apache2
+
+- name: Enable mod_ssl
+  community.general.apache2_module:
+    name: ssl
+    state: present
+    ignore_configcheck: true
+  notify: restart apache2
+
+- name: Enable the default-ssl site
+  ansible.builtin.command: a2ensite default-ssl
+  args:
+    creates: /etc/apache2/sites-enabled/default-ssl.conf
+  notify: restart apache2
+
+- name: Apply changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish Horizon on the VIP (HTTP redirect + HTTPS passthrough, sticky)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: horizon
+    stream_ports: [80, 443]
+    stream_mode: passthrough
+    stream_balance: source
+  when: ha_enabled | bool
+
+- name: Apply HAProxy changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the dashboard
+  ansible.builtin.uri:
+    url: "https://{{ controller_fqdn }}/horizon/auth/login/"
+    ca_path: "{{ tls_ca }}"
+  register: _horizon
+  until: _horizon.status == 200
+  retries: 20
+  delay: 3

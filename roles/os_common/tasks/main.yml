@@ -1,0 +1,5 @@
+---
+# os_common only provides reusable task files (tasks_from) and the shared
+# handlers. Roles pull it in through meta/main.yml dependencies.
+- name: os_common loaded
+  ansible.builtin.meta: noop

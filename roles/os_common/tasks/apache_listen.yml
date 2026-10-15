@@ -1,0 +1,36 @@
+---
+# Server World binds every Apache-hosted API to 127.0.0.1 and lets nginx
+# terminate TLS on the management IP. In HA the API binds the management IP
+# instead and HAProxy owns the VIP. Rewrites "Listen <port>" /
+# "Listen <any-ip>:<port>" to "Listen <api_bind_host>:<port>".
+# vars: listen_ports (list of ints), listen_host (optional, default api_bind_host)
+- name: "Find Apache configs listening on {{ listen_ports | join(', ') }}"
+  ansible.builtin.find:
+    paths:
+      - /etc/apache2/sites-available
+      - /etc/apache2/conf-available
+    patterns: "*.conf"
+    contains: '^\s*Listen\s+(\S+:)?({{ listen_ports | join("|") }})\s*$'
+  register: _apache_listen_files
+
+- name: "Bind Apache {{ listen_ports | join(', ') }} to {{ listen_host | default(api_bind_host) }}"
+  ansible.builtin.replace:
+    path: "{{ item.0.path }}"
+    regexp: '^(\s*)Listen\s+(\S+:)?{{ item.1 }}\s*$'
+    replace: '\1Listen {{ listen_host | default(api_bind_host) }}:{{ item.1 }}'
+  loop: "{{ _apache_listen_files.files | product(listen_ports) | list }}"
+  loop_control:
+    label: "{{ item.0.path }}:{{ item.1 }}"
+  notify: restart apache2
+
+# The files may already be right while Apache still runs with the package's
+# "Listen <port>" (a restart queued by an earlier, failed run is lost). A
+# wildcard socket would then block nginx/HAProxy from binding that port.
+- name: "Is Apache still listening on all addresses for {{ listen_ports | join(', ') }}?"
+  ansible.builtin.shell:
+    cmd: >-
+      ss -Hltnp | grep apache2 | awk '{print $4}'
+      | grep -E '^(\*|0\.0\.0\.0|\[::\]):({{ listen_ports | join("|") }})$' || true
+  register: _apache_wildcard
+  changed_when: _apache_wildcard.stdout | length > 0
+  notify: restart apache2

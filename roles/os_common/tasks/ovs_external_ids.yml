@@ -1,0 +1,23 @@
+---
+# Idempotent "ovs-vsctl set open . external-ids:<key>=<value>".
+# vars: ovs_external_ids (dict)
+# The script goes through "cmd:" so Ansible does not try to split its quotes
+# into module arguments.
+- name: Set Open vSwitch external-ids
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      cur="$(ovs-vsctl --if-exists get open . "external-ids:${KEY}" | tr -d '"')"
+      if [ "$cur" != "$VALUE" ]; then
+        ovs-vsctl set open . "external-ids:${KEY}=\"${VALUE}\""
+        echo CHANGED
+      fi
+    executable: /bin/bash
+  environment:
+    KEY: "{{ item.key }}"
+    VALUE: "{{ item.value }}"
+  loop: "{{ ovs_external_ids | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"
+  register: _ovs_ids
+  changed_when: "'CHANGED' in _ovs_ids.stdout"

@@ -1,0 +1,38 @@
+# {{ ansible_managed }}
+{% if ha_enabled | bool %}
+# HA: HAProxy passes TLS through from the VIP to this address
+Listen {{ mgmt_ip }}:5000
+{% else %}
+Listen 5000
+{% endif %}
+
+<VirtualHost *:5000>
+    SSLEngine on
+    SSLHonorCipherOrder on
+    SSLCertificateFile {{ tls_cert }}
+    SSLCertificateKeyFile {{ tls_key }}
+    SSLCertificateChainFile {{ tls_ca }}
+
+    WSGIScriptAlias / /usr/lib/python3/dist-packages/keystone/wsgi/api.py
+    WSGIDaemonProcess keystone-public processes=5 threads=1 user=keystone group=keystone display-name=%{GROUP}
+    WSGIProcessGroup keystone-public
+    WSGIApplicationGroup %{GLOBAL}
+    WSGIPassAuthorization On
+    LimitRequestBody 114688
+
+    ErrorLog /var/log/apache2/keystone.log
+    CustomLog /var/log/apache2/keystone_access.log combined
+
+    <Directory /usr/lib/python3/dist-packages/keystone>
+        Require all granted
+    </Directory>
+</VirtualHost>
+
+Alias /identity /usr/lib/python3/dist-packages/keystone/wsgi/api.py
+<Location /identity>
+    SetHandler wsgi-script
+    Options +ExecCGI
+    WSGIProcessGroup keystone-public
+    WSGIApplicationGroup %{GLOBAL}
+    WSGIPassAuthorization On
+</Location>

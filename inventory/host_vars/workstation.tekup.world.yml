@@ -1,0 +1,5 @@
+---
+# Ansible control node - not an OpenStack node (real lab VM, see vms_ip)
+ansible_host: 192.168.1.20
+ansible_user: ubuntu
+mgmt_ip: 192.168.1.20

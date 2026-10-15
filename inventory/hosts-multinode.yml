@@ -1,0 +1,33 @@
+---
+# Multi-node layout (Server World's control / network / compute / storage split, no HA):
+#   dlp.tekup.world      ctl1  controller
+#   network.tekup.world  ctl2  network + Swift proxy
+#   node01/node02        cmp1/cmp2  compute
+#   storage.tekup.world  stor1 storage + NFS + Swift storage
+#
+# Use it with:  ansible-playbook -i inventory/hosts-multinode.yml site.yml --ask-vault-pass
+# Per-host settings (ansible_host, mgmt_ip, disks, eth1) are in inventory/host_vars/.
+all:
+  children:
+    controller:
+      hosts:
+        dlp.tekup.world:
+    network:
+      hosts:
+        network.tekup.world:
+    compute:
+      hosts:
+        node01.tekup.world:
+        node02.tekup.world:
+    storage:
+      hosts:
+        storage.tekup.world:
+    swift_proxy:
+      hosts:
+        network.tekup.world:
+    swift_storage:
+      hosts:
+        storage.tekup.world:
+    nfs:
+      hosts:
+        storage.tekup.world:

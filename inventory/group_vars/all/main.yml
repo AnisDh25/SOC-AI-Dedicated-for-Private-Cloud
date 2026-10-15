@@ -1,0 +1,199 @@
+---
+# ===========================================================================
+# OpenStack Flamingo (2025.2) on Ubuntu 24.04 - based on server-world.info
+# Secrets live in vault.yml (encrypt it with ansible-vault).
+# ===========================================================================
+
+openstack_release: flamingo
+domain: tekup.world
+region: RegionOne
+timezone: Etc/UTC
+ntp_servers: []            # e.g. [ntp.ubuntu.com]; empty keeps the Ubuntu default pool
+# apt-cacher-ng on the workstation: every node downloads each package once
+# through it. Nodes fall back to direct downloads when it is unreachable.
+# Empty string = no cache.
+apt_cache_host: 192.168.1.20
+apt_cache_port: 3142
+mgmt_network: 192.168.1.0/24  # used for BIND allow-query and NFS exports
+
+# ---------------------------------------------------------------------------
+# High availability (inventory/hosts-ha.yml)
+# HA switches on automatically when the controller group has more than one
+# host. keepalived moves the VIP between controllers; HAProxy on the VIP
+# publishes every API, MariaDB (Galera) and Horizon.
+# ---------------------------------------------------------------------------
+ha_enabled: "{{ groups['controller'] | length > 1 }}"
+vip_address: 192.168.1.30
+vip_fqdn: openstack.tekup.world
+vip_prefix: 24
+vip_interface: "{{ ansible_facts.default_ipv4.interface | default('eth0') }}"
+vip_router_id: 51           # VRRP id, unique on the management LAN
+# Galera failure detection tuned for VMs that freeze for seconds (see galera.cnf.j2)
+galera_provider_options: >-
+  evs.keepalive_period=PT3S;
+  evs.inactive_check_period=PT10S;
+  evs.suspect_timeout=PT30S;
+  evs.inactive_timeout=PT60S;
+  evs.install_timeout=PT60S;
+  gmcast.peer_timeout=PT15S;
+  pc.wait_prim_timeout=PT60S
+glance_uid: 950             # fixed UIDs so NFS-shared image / metric files
+gnocchi_uid: 951            # have the same owner on every controller
+nfs_glance_path: /var/lib/nfs-glance
+nfs_gnocchi_path: /var/lib/nfs-gnocchi
+
+# Where APIs bind: 127.0.0.1 behind nginx (single controller), or the
+# management IP behind HAProxy (HA).
+api_bind_host: "{{ mgmt_ip if ha_enabled | bool else '127.0.0.1' }}"
+
+# ---------------------------------------------------------------------------
+# Topology, derived from inventory groups (inventory hostnames are FQDNs)
+# In HA, "controller_fqdn"/"network_fqdn" are the VIP name: every client and
+# service reaches APIs and MariaDB through HAProxy.
+# ---------------------------------------------------------------------------
+fqdn: "{{ inventory_hostname }}"
+
+controller_host: "{{ groups['controller'][0] }}"
+controller_fqdn: "{{ vip_fqdn if ha_enabled | bool else controller_host }}"
+controller_ip: "{{ vip_address if ha_enabled | bool else hostvars[controller_host].mgmt_ip }}"
+
+network_host: "{{ groups['network'][0] }}"
+network_fqdn: "{{ vip_fqdn if ha_enabled | bool else network_host }}"
+network_ip: "{{ hostvars[network_host].mgmt_ip }}"
+
+swift_proxy_host: "{{ groups['swift_proxy'][0] }}"
+swift_proxy_fqdn: "{{ vip_fqdn if ha_enabled | bool else swift_proxy_host }}"
+
+nfs_host: "{{ groups['nfs'][0] }}"
+nfs_fqdn: "{{ nfs_host }}"
+
+is_controller: "{{ inventory_hostname in groups['controller'] }}"
+is_network: "{{ inventory_hostname in groups['network'] }}"
+is_compute: "{{ inventory_hostname in groups['compute'] }}"
+is_storage: "{{ inventory_hostname in groups['storage'] }}"
+is_swift_proxy: "{{ inventory_hostname in groups['swift_proxy'] }}"
+is_swift_storage: "{{ inventory_hostname in groups['swift_storage'] }}"
+is_nfs: "{{ inventory_hostname in groups['nfs'] }}"
+
+# ---------------------------------------------------------------------------
+# Common service endpoints
+# ---------------------------------------------------------------------------
+keystone_url: "https://{{ controller_fqdn }}:5000"
+# RabbitMQ and Memcached are not behind the VIP: clients get every controller.
+controller_ips: "{{ groups['controller'] | map('extract', hostvars, 'mgmt_ip') | list }}"
+rabbit_url: >-
+  rabbit://{{ controller_ips | map('regex_replace', '^', 'openstack:' ~ vault_rabbit_password ~ '@')
+              | map('regex_replace', '$', ':5672') | join(',') }}
+memcached_servers: "{{ controller_ips | map('regex_replace', '$', ':11211') | join(',') }}"
+# OVN NB/SB: one server, or a RAFT cluster on every network node (HA)
+network_ips: "{{ groups['network'] | map('extract', hostvars, 'mgmt_ip') | list }}"
+ovn_nb_connection: "{{ network_ips | map('regex_replace', '^', 'tcp:') | map('regex_replace', '$', ':6641') | join(',') }}"
+ovn_sb_connection: "{{ network_ips | map('regex_replace', '^', 'tcp:') | map('regex_replace', '$', ':6642') | join(',') }}"
+
+# ---------------------------------------------------------------------------
+# TLS (self-signed CA generated on the controller)
+# ---------------------------------------------------------------------------
+tls_dir: /etc/ssl/openstack
+tls_ca: "{{ tls_dir }}/ca.crt"
+tls_ca_key: "{{ tls_dir }}/ca.key"
+tls_cert: "{{ tls_dir }}/{{ fqdn }}.crt"
+tls_key: "{{ tls_dir }}/{{ fqdn }}.key"
+tls_fullchain: "{{ tls_dir }}/{{ fqdn }}-fullchain.pem"
+tls_haproxy_pem: "{{ tls_dir }}/haproxy.pem"   # cert + CA + key, HA only
+tls_ca_common_name: "OpenStack {{ domain }} Lab CA"
+tls_extra_sans: []         # e.g. ["DNS:openstack.tekup.world"]
+
+# ---------------------------------------------------------------------------
+# Networking (Neutron ML2/OVN)
+# ---------------------------------------------------------------------------
+provider_interface: eth1
+provider_bridge: br-eth1
+physnet: physnet1
+# flat   = Server World (12): one shared FLAT network "sharednet1" for VMs
+# geneve = Server World (25): external "public" + router + tenant "private"
+#          network with floating IPs (needed for Octavia / Designate examples)
+network_mode: geneve
+compute_is_gateway_chassis: true
+provider_net:
+  cidr: 192.168.1.0/24       # home LAN, bridged to the 2nd NICs
+  pool_start: 192.168.1.150  # keep .150-.169 out of the router's DHCP
+  pool_end: 192.168.1.169
+  gateway: 192.168.1.1
+  dns: 192.168.1.1
+private_net:
+  cidr: 192.168.100.0/24
+  gateway: 192.168.100.1
+  dns: 192.168.1.1
+
+# ---------------------------------------------------------------------------
+# Nova / Glance
+# ---------------------------------------------------------------------------
+nova_allow_qemu_fallback: true   # use virt_type=qemu when /dev/kvm is missing
+glance_image_url: http://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img
+glance_image_name: Ubuntu2404
+glance_customize_image: false    # Server World (06): enable ssh password login in the image
+
+# ---------------------------------------------------------------------------
+# Block storage / shared filesystems / object storage
+# ---------------------------------------------------------------------------
+cinder_lvm_device: /dev/sdb
+cinder_vg: vg_volume01
+cinder_backends: "{{ ['lvm'] + (['nfs'] if enable_cinder_nfs | bool else []) }}"
+nfs_share_path: /var/lib/nfs-share
+nfs_backup_path: /var/lib/cinder-backup
+nfs_allowed_network: "{{ mgmt_network }}"
+
+manila_lvm_device: /dev/sdc
+manila_vg: manila-volumes
+
+swift_partition_power: 12
+# Per swift_storage host (override in host_vars). Either a loop file or a disk:
+#   - {name: device, disk: /dev/sdd}
+swift_devices:
+  - name: device
+    loop_file: /srv/swift-loop/device.img
+    loop_size: 10G
+
+# ---------------------------------------------------------------------------
+# Demo / test identities (Server World 13 and 41)
+# ---------------------------------------------------------------------------
+demo_project: hiroshima
+demo_user: serverworld
+swift_project: swiftservice
+swift_user: swiftuser01
+
+flavors:
+  - {id: "1", name: m1.tiny, vcpus: 1, ram: 2048, disk: 10}
+  - {id: "2", name: m1.small, vcpus: 2, ram: 4096, disk: 10}
+  - {id: "3", name: m1.medium, vcpus: 4, ram: 8192, disk: 10}
+  - {id: "4", name: m1.large, vcpus: 8, ram: 16384, disk: 10}
+  - {id: "5", name: m2.medium, vcpus: 4, ram: 8192, disk: 10, ephemeral: 10}
+
+# ---------------------------------------------------------------------------
+# Feature switches
+# ---------------------------------------------------------------------------
+enable_horizon: true
+enable_cinder: true
+enable_cinder_nfs: true
+enable_cinder_backup: true
+enable_heat: true
+enable_barbican: true
+enable_swift: true
+enable_manila: true
+enable_designate: true
+enable_octavia: true
+enable_telemetry: true     # Gnocchi + Ceilometer (+ notifications in nova/glance/cinder)
+enable_cloudkitty: true    # requires enable_telemetry
+create_test_resources: false
+
+openstack_clients:
+  - python3-openstackclient
+  - python3-openstacksdk
+  - python3-heatclient
+  - python3-barbicanclient
+  - python3-swiftclient
+  - python3-manilaclient
+  - python3-designateclient
+  - python3-octaviaclient
+  - python3-gnocchiclient
+  - python3-cloudkittyclient

@@ -1,0 +1,112 @@
+---
+# Server World (02): MariaDB for all OpenStack databases.
+# HA: a Galera cluster across the controllers, published on the VIP by
+# HAProxy with one active node and the others as backups (no write conflicts).
+
+- name: Install MariaDB
+  ansible.builtin.apt:
+    name: "{{ ['mariadb-server', 'python3-pymysql'] + (['galera-4', 'rsync'] if ha_enabled | bool else []) }}"
+    state: present
+
+- name: Configure MariaDB (bind-address, max_connections)
+  ansible.builtin.lineinfile:
+    path: /etc/mysql/mariadb.conf.d/50-server.cnf
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    insertafter: '^\[mysqld\]'
+  loop:
+    - {regexp: '^#?\s*bind-address\s*=', line: "bind-address = {{ mgmt_ip }}"}
+    - {regexp: '^#?\s*max_connections\s*=', line: "max_connections = 1000"}
+  notify: restart mariadb
+
+- name: Single MariaDB server
+  when: not ha_enabled | bool
+  block:
+    - name: Enable MariaDB
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: started
+        enabled: true
+
+    - name: Apply MariaDB changes now
+      ansible.builtin.meta: flush_handlers
+
+- name: Galera cluster
+  when: ha_enabled | bool
+  block:
+    - name: Galera settings
+      ansible.builtin.template:
+        src: galera.cnf.j2
+        dest: /etc/mysql/mariadb.conf.d/60-galera.cnf
+        mode: "0644"
+      register: _galera_cnf
+
+    - name: Has the cluster been bootstrapped?
+      ansible.builtin.stat:
+        path: /var/lib/mysql/.ansible-galera-bootstrapped
+      register: _galera_marker
+      delegate_to: "{{ controller_host }}"
+      run_once: true
+
+    - name: First bootstrap of the Galera cluster
+      when: not _galera_marker.stat.exists
+      block:
+        - name: Stop the standalone MariaDB started by the package
+          ansible.builtin.systemd_service:
+            name: mariadb
+            state: stopped
+
+        - name: Bootstrap a new cluster on the first controller
+          ansible.builtin.command: galera_new_cluster
+          when: inventory_hostname == controller_host
+          changed_when: true
+
+        - name: Join the other controllers one at a time
+          ansible.builtin.systemd_service:
+            name: mariadb
+            state: started
+          when: inventory_hostname != controller_host
+          throttle: 1
+
+        - name: Mark the cluster as bootstrapped
+          ansible.builtin.file:
+            path: /var/lib/mysql/.ansible-galera-bootstrapped
+            state: touch
+            mode: "0600"
+          when: inventory_hostname == controller_host
+
+    - name: Enable MariaDB
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: started
+        enabled: true
+
+    - name: Apply changed Galera settings, one controller at a time
+      ansible.builtin.systemd_service:
+        name: mariadb
+        state: restarted
+      when: _galera_cnf is changed and _galera_marker.stat.exists
+      throttle: 1
+
+    - name: Wait until every controller has joined
+      ansible.builtin.command: mariadb -N -B -e "SHOW STATUS LIKE 'wsrep_cluster_size'"
+      register: _wsrep
+      until: (_wsrep.stdout.split() | last | int) >= (groups['controller'] | length)
+      retries: 30
+      delay: 5
+      changed_when: false
+      run_once: true
+
+    - name: Publish MariaDB on the VIP (one active node, others backup)
+      ansible.builtin.include_role:
+        name: os_common
+        tasks_from: nginx_stream.yml
+      vars:
+        stream_name: mariadb
+        stream_ports: [3306]
+        stream_mode: plain
+        stream_backup: true
+        stream_timeout: 90m
+
+    - name: Apply HAProxy changes
+      ansible.builtin.meta: flush_handlers

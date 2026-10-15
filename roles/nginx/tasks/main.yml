@@ -1,0 +1,40 @@
+---
+# Nginx "stream" TLS proxy in front of the local API services (Server World
+# adds one upstream/server pair per service; here each role drops a file
+# into /etc/nginx/stream.d/).
+
+- name: Install nginx with the stream module
+  ansible.builtin.apt:
+    name: [nginx, libnginx-mod-stream]
+    state: present
+
+- name: stream.d directory
+  ansible.builtin.file:
+    path: /etc/nginx/stream.d
+    state: directory
+    mode: "0755"
+
+- name: Disable the default site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: reload nginx
+
+- name: Stream block with TLS certificate
+  ansible.builtin.blockinfile:
+    path: /etc/nginx/nginx.conf
+    marker: "# {mark} ANSIBLE MANAGED OPENSTACK STREAM"
+    insertafter: EOF
+    block: |
+      stream {
+          ssl_certificate "{{ tls_fullchain }}";
+          ssl_certificate_key "{{ tls_key }}";
+          include /etc/nginx/stream.d/*.conf;
+      }
+  notify: reload nginx
+
+- name: Enable nginx
+  ansible.builtin.systemd_service:
+    name: nginx
+    state: started
+    enabled: true

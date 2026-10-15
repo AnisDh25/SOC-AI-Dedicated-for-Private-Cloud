@@ -1,0 +1,115 @@
+# {{ ansible_managed }}
+# One file for controller and compute roles: Server World (08), (09), (11),
+# flamingo2 (17)/(20)/(24), Cinder (27)/(29) and Ceilometer (55).
+[DEFAULT]
+my_ip = {{ mgmt_ip }}
+{% if is_controller | bool %}
+osapi_compute_listen = {{ api_bind_host }}
+osapi_compute_listen_port = 8774
+metadata_listen = {{ api_bind_host }}
+metadata_listen_port = 8775
+{% endif %}
+state_path = /var/lib/nova
+enabled_apis = osapi_compute,metadata
+log_dir = /var/log/nova
+transport_url = {{ rabbit_url }}
+vif_plugging_is_fatal = True
+vif_plugging_timeout = 300
+{% if is_compute | bool and enable_telemetry | bool %}
+instance_usage_audit = True
+instance_usage_audit_period = hour
+{% endif %}
+
+[api]
+auth_strategy = keystone
+
+[vnc]
+enabled = True
+{% if is_compute | bool %}
+server_listen = {{ mgmt_ip }}
+server_proxyclient_address = {{ mgmt_ip }}
+{% endif %}
+{% if is_controller | bool %}
+novncproxy_host = {{ api_bind_host }}
+novncproxy_port = 6080
+{% endif %}
+novncproxy_base_url = https://{{ controller_fqdn }}:6080/vnc_auto.html
+
+[oslo_concurrency]
+lock_path = $state_path/tmp
+{% if is_controller | bool %}
+
+[api_database]
+connection = mysql+pymysql://nova:{{ vault_db_passwords.nova }}@{{ controller_fqdn }}:3306/nova_api
+
+[database]
+connection = mysql+pymysql://nova:{{ vault_db_passwords.nova }}@{{ controller_fqdn }}:3306/nova
+{% endif %}
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = nova
+password = {{ vault_service_passwords.nova }}
+service_token_roles = service
+service_token_roles_required = true
+insecure = false
+
+[service_user]
+send_service_user_token = true
+auth_url = {{ keystone_url }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = nova
+password = {{ vault_service_passwords.nova }}
+insecure = false
+
+[placement]
+auth_url = {{ keystone_url }}
+os_region_name = {{ region }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = placement
+password = {{ vault_service_passwords.placement }}
+insecure = false
+
+[neutron]
+auth_url = {{ keystone_url }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+region_name = {{ region }}
+project_name = service
+username = neutron
+password = {{ vault_service_passwords.neutron }}
+service_metadata_proxy = True
+metadata_proxy_shared_secret = {{ vault_metadata_secret }}
+insecure = false
+{% if enable_cinder | bool %}
+
+[cinder]
+os_region_name = {{ region }}
+{% endif %}
+
+[wsgi]
+api_paste_config = /etc/nova/api-paste.ini
+
+[oslo_policy]
+enforce_new_defaults = true
+{% if is_compute | bool and enable_telemetry | bool %}
+
+[notifications]
+notify_on_state_change = vm_and_task_state
+
+[oslo_messaging_notifications]
+driver = messagingv2
+{% endif %}

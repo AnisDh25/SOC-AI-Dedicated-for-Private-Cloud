@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+metrics:
+  cpu:
+    unit: instance
+    alt_name: instance
+    groupby:
+      - id
+      - user_id
+      - project_id
+    metadata:
+      - flavor_name
+      - flavor_id
+      - vcpus
+    mutate: NUMBOOL
+    extra_args:
+      aggregation_method: mean
+      resource_type: instance
+      force_granularity: 300
+
+  volume.size:
+    unit: GiB
+    groupby:
+      - id
+      - user_id
+      - project_id
+    metadata:
+      - volume_type
+    extra_args:
+      aggregation_method: mean
+      resource_type: volume
+      force_granularity: 300

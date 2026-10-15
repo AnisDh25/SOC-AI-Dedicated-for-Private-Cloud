@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+[DEFAULT]
+debug = false
+
+[api]
+auth_strategy = keystone
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = placement
+password = {{ vault_service_passwords.placement }}
+insecure = false
+
+[placement_database]
+connection = mysql+pymysql://placement:{{ vault_db_passwords.placement }}@{{ controller_fqdn }}:3306/placement

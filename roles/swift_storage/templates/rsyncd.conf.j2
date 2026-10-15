@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+pid file = /var/run/rsyncd.pid
+log file = /var/log/rsyncd.log
+uid = swift
+gid = swift
+address = 0.0.0.0
+{% for mod, lock, maxc, ro, path in [
+  ('account', 'account', 25, 'false', '/srv/node'),
+  ('container', 'container', 25, 'false', '/srv/node'),
+  ('object', 'object', 25, 'false', '/srv/node'),
+  ('swift_server', 'swift_server', 5, 'true', '/etc/swift'),
+] %}
+
+[{{ mod }}]
+path            = {{ path }}
+read only       = {{ ro }}
+write only      = no
+list            = yes
+incoming chmod  = 0644
+outgoing chmod  = 0644
+max connections = {{ maxc }}
+lock file =     /var/lock/{{ lock }}.lock
+{% endfor %}

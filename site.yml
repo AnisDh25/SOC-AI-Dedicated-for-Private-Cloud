@@ -1,0 +1,214 @@
+---
+# OpenStack Flamingo (2025.2) on Ubuntu 24.04, following server-world.info:
+#   openstack_flamingo  (01)-(15)  core
+#   openstack_flamingo2 (17)(23)-(25)(27)-(29)  compute/network nodes, Cinder
+#   openstack_flamingo3 (30)-(44)  Cinder NFS/multi/backup, Heat, Barbican, Swift, Manila
+#   openstack_flamingo4 (45)-(59)  Designate, Octavia (OVN provider), Gnocchi, Ceilometer, CloudKitty
+#
+# ansible-playbook site.yml --ask-vault-pass [--tags <role>]
+
+- name: Base system and TLS
+  hosts: all
+  become: true
+  roles:
+    - {role: common, tags: [common]}
+    - {role: tls, tags: [tls]}
+
+- name: Nginx TLS stream proxy (single controller)
+  hosts: controller:network:swift_proxy
+  become: true
+  gather_facts: false
+  roles:
+    - {role: nginx, tags: [nginx], when: not ha_enabled | bool}
+
+- name: HAProxy + keepalived VIP (HA, more than one controller)
+  hosts: controller
+  become: true
+  gather_facts: false
+  roles:
+    - {role: haproxy_keepalived, tags: [haproxy, ha], when: ha_enabled | bool}
+
+- name: Controller infrastructure and Keystone (02)-(04)
+  hosts: controller
+  become: true
+  gather_facts: false
+  module_defaults: &os_defaults
+    group/openstack.cloud.openstack:
+      cloud: admin
+  environment: &os_env
+    OS_CLOUD: admin
+  roles:
+    - {role: mariadb, tags: [mariadb]}
+    - {role: rabbitmq, tags: [rabbitmq]}
+    - {role: memcached, tags: [memcached]}
+    - {role: keystone, tags: [keystone]}
+
+- name: NFS server for Cinder (30)(32) and, in HA, the Glance/Gnocchi stores
+  hosts: nfs
+  become: true
+  gather_facts: false
+  roles:
+    - role: nfs_server
+      tags: [nfs_server, cinder, glance, gnocchi]
+      when: >-
+        ha_enabled | bool or
+        (enable_cinder | bool and (enable_cinder_nfs | bool or enable_cinder_backup | bool))
+
+- name: Glance, Placement, Nova API (05)-(08)
+  hosts: controller
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: glance, tags: [glance]}
+    - {role: placement, tags: [placement, nova]}
+    - {role: nova_controller, tags: [nova_controller, nova]}
+
+- name: Nova compute (09)(17)
+  hosts: compute
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: nova_compute, tags: [nova_compute, nova]}
+
+- name: Neutron server and OVN central (10)(11)(23)
+  hosts: network
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: neutron_server, tags: [neutron_server, neutron]}
+
+- name: OVN chassis and metadata agents (11)(24)
+  hosts: compute:network
+  become: true
+  gather_facts: false
+  roles:
+    - {role: neutron_ovn_chassis, tags: [neutron_ovn_chassis, neutron]}
+
+- name: Users and flavors (13)(14)
+  hosts: controller[0]
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: bootstrap, tags: [bootstrap]}
+
+- name: Provider bridge and Neutron networks (12)(25)
+  hosts: compute:network
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: network_setup, tags: [network_setup, neutron]}
+
+- name: Cinder API (27)
+  hosts: controller
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: cinder_controller, tags: [cinder_controller, cinder], when: enable_cinder | bool}
+
+- name: Cinder volume and backup (28)-(32)
+  hosts: storage
+  become: true
+  gather_facts: false
+  roles:
+    - {role: cinder_volume, tags: [cinder_volume, cinder], when: enable_cinder | bool}
+    - {role: cinder_backup, tags: [cinder_backup, cinder], when: enable_cinder | bool and enable_cinder_backup | bool}
+
+- name: Barbican and Manila API (36)(42)
+  hosts: controller
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: barbican, tags: [barbican], when: enable_barbican | bool}
+    - {role: manila_controller, tags: [manila_controller, manila], when: enable_manila | bool}
+
+- name: Manila share (43)(44)
+  hosts: storage
+  become: true
+  gather_facts: false
+  roles:
+    - {role: manila_share, tags: [manila_share, manila], when: enable_manila | bool}
+
+- name: Heat, Designate, Octavia (33)(34)(45)(46)(48)(49)
+  hosts: network
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: heat, tags: [heat], when: enable_heat | bool}
+    - {role: designate, tags: [designate], when: enable_designate | bool}
+    - {role: octavia_ovn, tags: [octavia], when: enable_octavia | bool}
+
+- name: Swift proxy and rings (38)(39)(41)
+  hosts: swift_proxy
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: swift_proxy, tags: [swift_proxy, swift], when: enable_swift | bool}
+
+- name: Swift storage (40)
+  hosts: swift_storage
+  become: true
+  gather_facts: false
+  roles:
+    - {role: swift_storage, tags: [swift_storage, swift], when: enable_swift | bool}
+
+- name: Gnocchi and Ceilometer central (52)(53)
+  hosts: network
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: gnocchi, tags: [gnocchi, telemetry], when: enable_telemetry | bool}
+    - {role: ceilometer_central, tags: [ceilometer, telemetry], when: enable_telemetry | bool}
+
+- name: Ceilometer compute agent (54)
+  hosts: compute
+  become: true
+  gather_facts: false
+  roles:
+    - {role: ceilometer_compute, tags: [ceilometer, telemetry], when: enable_telemetry | bool}
+
+- name: CloudKitty (58)(59)
+  hosts: network
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - role: cloudkitty
+      tags: [cloudkitty]
+      when: enable_cloudkitty | bool and enable_telemetry | bool
+
+- name: Horizon
+  hosts: controller
+  become: true
+  gather_facts: false
+  roles:
+    - {role: horizon, tags: [horizon], when: enable_horizon | bool}
+
+- name: Optional end-to-end test resources
+  hosts: controller[0]
+  become: true
+  gather_facts: false
+  module_defaults: *os_defaults
+  environment: *os_env
+  roles:
+    - {role: smoke_test, tags: [smoke_test], when: create_test_resources | bool}

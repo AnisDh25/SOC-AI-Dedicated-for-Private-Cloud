@@ -1,0 +1,18 @@
+---
+# Run a *-manage command as the service user (su -s /bin/sh -c "<cmd>" <user>).
+# DB sync commands are idempotent, so they run on every play. They run on
+# one host only: with several controllers (HA) they share one Galera DB.
+# Retried: on Galera a schema change can hit "Lock wait timeout" while the
+# freshly installed services already hold connections; a re-run continues
+# from the current schema version.
+# vars: manage_user, manage_cmds (list of strings)
+- name: "Run {{ manage_user }} management commands"
+  ansible.builtin.command:
+    argv: [su, -s, /bin/sh, -c, "{{ item }}", "{{ manage_user }}"]
+  loop: "{{ manage_cmds }}"
+  register: _manage
+  until: _manage.rc == 0
+  retries: 3
+  delay: 15
+  changed_when: false
+  run_once: true

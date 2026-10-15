@@ -1,0 +1,37 @@
+---
+# Point every node's apt at the apt-cacher-ng on the workstation (or remove it
+# when apt_cache_host is empty) without running the whole site.yml.
+#   ansible-playbook -i inventory/hosts-ha.yml apt-cache.yml
+- name: apt cache settings
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: apt cache auto-detect script (cache if reachable, else direct)
+      ansible.builtin.copy:
+        dest: /usr/local/bin/apt-proxy-detect
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Managed by Ansible: use apt-cacher-ng on {{ apt_cache_host }}:{{ apt_cache_port }} when it answers.
+          if timeout 2 bash -c '</dev/tcp/{{ apt_cache_host }}/{{ apt_cache_port }}' 2>/dev/null; then
+            echo "http://{{ apt_cache_host }}:{{ apt_cache_port }}"
+          else
+            echo DIRECT
+          fi
+      when: apt_cache_host | length > 0
+
+    - name: Route apt HTTP downloads through the cache
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/01proxy
+        mode: "0644"
+        content: |
+          // Managed by Ansible (apt-cacher-ng on the workstation)
+          Acquire::http::Proxy-Auto-Detect "/usr/local/bin/apt-proxy-detect";
+      when: apt_cache_host | length > 0
+
+    - name: No apt cache configured
+      ansible.builtin.file:
+        path: /etc/apt/apt.conf.d/01proxy
+        state: absent
+      when: apt_cache_host | length == 0

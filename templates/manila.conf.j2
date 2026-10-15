@@ -1,0 +1,46 @@
+# {{ ansible_managed }}
+# Server World flamingo3 (42) control node, (43) storage node, (44) LVM backend.
+[DEFAULT]
+{% if is_controller | bool %}
+osapi_share_listen = {{ api_bind_host }}
+osapi_share_listen_port = 8786
+{% endif %}
+{% if is_storage | bool %}
+my_ip = {{ mgmt_ip }}
+enabled_share_protocols = NFS,CIFS
+enabled_share_backends = lvm
+{% endif %}
+rootwrap_config = /etc/manila/rootwrap.conf
+api_paste_config = /etc/manila/api-paste.ini
+state_path = /var/lib/manila
+auth_strategy = keystone
+default_share_type = default_share_type
+share_name_template = share-%s
+transport_url = {{ rabbit_url }}
+
+[database]
+connection = mysql+pymysql://manila:{{ vault_db_passwords.manila }}@{{ controller_fqdn }}:3306/manila
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = manila
+password = {{ vault_service_passwords.manila }}
+insecure = false
+
+[oslo_concurrency]
+lock_path = $state_path/tmp
+{% if is_storage | bool %}
+
+[lvm]
+share_backend_name = LVM
+share_driver = manila.share.drivers.lvm.LVMShareDriver
+driver_handles_share_servers = False
+lvm_share_volume_group = {{ manila_vg }}
+lvm_share_export_ips = $my_ip
+{% endif %}

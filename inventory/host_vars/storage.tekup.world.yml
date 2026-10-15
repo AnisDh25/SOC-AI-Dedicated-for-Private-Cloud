@@ -1,0 +1,19 @@
+---
+# storage node (real lab VM: sdb/sdc/sdd are 100G each)
+ansible_host: 192.168.1.26
+ansible_user: ubuntu
+mgmt_ip: 192.168.1.26
+
+# Empty disks on this node
+cinder_lvm_device: /dev/sdb   # Cinder LVM (vg_volume01)
+manila_lvm_device: /dev/sdc   # Manila LVM (manila-volumes)
+
+# Swift object storage device. With one device Swift keeps 1 replica;
+# list 3 devices (or add storage nodes) for 3 replicas.
+swift_devices:
+  - name: device
+    disk: /dev/sdd
+# Without a spare disk, use a loop file instead:
+#  - name: device
+#    loop_file: /srv/swift-loop/device.img
+#    loop_size: 20G

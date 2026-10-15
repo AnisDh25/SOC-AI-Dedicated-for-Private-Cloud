@@ -1,0 +1,122 @@
+---
+# Server World (12) Configure Networking (flat) or flamingo2 (25) Geneve
+# (external network + router + tenant network). Runs on every OVN chassis.
+
+- name: The provider interface must not carry the default route
+  ansible.builtin.assert:
+    that: ansible_facts.default_ipv4.interface | default('') != provider_interface
+    fail_msg: >-
+      {{ provider_interface }} carries the default route; adding it to {{ provider_bridge }}
+      would cut network access. Use a dedicated NIC (Server World uses eth1).
+
+- name: Bring up the provider interface without an IP
+  ansible.builtin.copy:
+    dest: "/etc/systemd/network/{{ provider_interface }}.network"
+    content: |
+      [Match]
+      Name={{ provider_interface }}
+
+      [Network]
+      LinkLocalAddressing=no
+      IPv6AcceptRA=no
+    mode: "0644"
+
+- name: Link up
+  ansible.builtin.command: "ip link set {{ provider_interface }} up"
+  changed_when: false
+
+- name: Provider bridge and port
+  ansible.builtin.command: "{{ item }}"
+  loop:
+    - "ovs-vsctl --may-exist add-br {{ provider_bridge }}"
+    - "ovs-vsctl --may-exist add-port {{ provider_bridge }} {{ provider_interface }}"
+  changed_when: false
+
+- name: OVN bridge mapping
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: ovs_external_ids.yml
+  vars:
+    ovs_external_ids:
+      ovn-bridge-mappings: "{{ physnet }}:{{ provider_bridge }}"
+
+- name: Neutron networks
+  run_once: true
+  delegate_to: "{{ controller_host }}"
+  block:
+    # ---- flat: Server World (12) ----------------------------------------
+    - name: Shared flat network sharednet1
+      openstack.cloud.network:
+        name: sharednet1
+        project: service
+        shared: true
+        provider_network_type: flat
+        provider_physical_network: "{{ physnet }}"
+      when: network_mode == 'flat'
+
+    - name: subnet1
+      openstack.cloud.subnet:
+        name: subnet1
+        network_name: sharednet1
+        project: service
+        cidr: "{{ provider_net.cidr }}"
+        gateway_ip: "{{ provider_net.gateway }}"
+        allocation_pool_start: "{{ provider_net.pool_start }}"
+        allocation_pool_end: "{{ provider_net.pool_end }}"
+        dns_nameservers: ["{{ provider_net.dns }}"]
+      when: network_mode == 'flat'
+
+    # ---- geneve: flamingo2 (25) -----------------------------------------
+    - name: External network public
+      openstack.cloud.network:
+        name: public
+        project: service
+        external: true
+        provider_network_type: flat
+        provider_physical_network: "{{ physnet }}"
+      when: network_mode == 'geneve'
+
+    - name: public-subnet
+      openstack.cloud.subnet:
+        name: public-subnet
+        network_name: public
+        project: service
+        cidr: "{{ provider_net.cidr }}"
+        gateway_ip: "{{ provider_net.gateway }}"
+        allocation_pool_start: "{{ provider_net.pool_start }}"
+        allocation_pool_end: "{{ provider_net.pool_end }}"
+        dns_nameservers: ["{{ provider_net.dns }}"]
+        enable_dhcp: false
+      when: network_mode == 'geneve'
+
+    - name: Tenant network private
+      openstack.cloud.network:
+        name: private
+        project: "{{ demo_project }}"
+      when: network_mode == 'geneve'
+
+    - name: private-subnet
+      openstack.cloud.subnet:
+        name: private-subnet
+        network_name: private
+        project: "{{ demo_project }}"
+        cidr: "{{ private_net.cidr }}"
+        gateway_ip: "{{ private_net.gateway }}"
+        dns_nameservers: ["{{ private_net.dns }}"]
+      when: network_mode == 'geneve'
+
+    # "public" belongs to project service; looked up by name inside the demo
+    # project the router module would not find it, so pass its ID.
+    - name: ID of the external network public
+      openstack.cloud.networks_info:
+        name: public
+      register: _public_net
+      when: network_mode == 'geneve'
+
+    - name: router01 (gateway public, interface private-subnet)
+      openstack.cloud.router:
+        name: router01
+        project: "{{ demo_project }}"
+        network: "{{ _public_net.networks[0].id }}"
+        interfaces: [private-subnet]
+      when: network_mode == 'geneve'

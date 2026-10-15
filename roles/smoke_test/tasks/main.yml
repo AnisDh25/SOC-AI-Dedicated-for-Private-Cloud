@@ -1,0 +1,203 @@
+---
+# Optional end-to-end checks from the Server World "How to use" pages
+# (15, 29-32, 35, 37, 41, 44, 47, 51). Enable with -e create_test_resources=true.
+# Resources are created as the demo user (cloud "demo" in clouds.yaml).
+
+- name: SSH key for the test instance
+  community.crypto.openssh_keypair:
+    path: /root/.ssh/id_ed25519
+    type: ed25519
+
+- name: Security group secgroup01 (ICMP + SSH + HTTP)
+  openstack.cloud.security_group:
+    cloud: demo
+    name: secgroup01
+
+- name: Security group rules
+  openstack.cloud.security_group_rule:
+    cloud: demo
+    security_group: secgroup01
+    protocol: "{{ item.proto }}"
+    port_range_min: "{{ item.port | default(omit) }}"
+    port_range_max: "{{ item.port | default(omit) }}"
+    remote_ip_prefix: 0.0.0.0/0
+  loop:
+    - {proto: icmp}
+    - {proto: tcp, port: 22}
+    - {proto: tcp, port: 80}
+
+- name: Keypair mykey
+  openstack.cloud.keypair:
+    cloud: demo
+    name: mykey
+    public_key_file: /root/.ssh/id_ed25519.pub
+
+- name: Instance Ubuntu-2404 (Server World 15)
+  openstack.cloud.server:
+    cloud: demo
+    name: Ubuntu-2404
+    image: "{{ glance_image_name }}"
+    flavor: m1.small
+    key_name: mykey
+    security_groups: [secgroup01]
+    network: "{{ 'private' if network_mode == 'geneve' else 'sharednet1' }}"
+    auto_ip: "{{ network_mode == 'geneve' }}"
+    floating_ip_pools: "{{ ['public'] if network_mode == 'geneve' else omit }}"
+    wait: true
+    timeout: 900
+  register: _server
+
+- name: Instance address
+  ansible.builtin.debug:
+    msg: "Ubuntu-2404 is reachable at {{ _server.server.access_ipv4 | default(_server.server.addresses) }} (ssh ubuntu@...)"
+
+# ---- Cinder (29)-(32) -------------------------------------------------------
+- name: Volumes
+  openstack.cloud.volume:
+    cloud: demo
+    name: "{{ item.name }}"
+    size: 10
+    volume_type: "{{ item.type }}"
+    wait: true
+  loop: "{{ [{'name': 'disk-lvm', 'type': 'lvm'}] + ([{'name': 'disk-nfs', 'type': 'nfs'}] if enable_cinder_nfs | bool else []) }}"
+  when: enable_cinder | bool
+
+- name: Attach volumes to Ubuntu-2404
+  openstack.cloud.server_volume:
+    cloud: demo
+    server: Ubuntu-2404
+    volume: "{{ item }}"
+  loop: "{{ ['disk-lvm'] + (['disk-nfs'] if enable_cinder_nfs | bool else []) }}"
+  when: enable_cinder | bool
+
+# ---- Heat (35) ---------------------------------------------------------------
+- name: Heat sample stack
+  openstack.cloud.stack:
+    cloud: demo
+    name: Heat-Stack
+    template: "{{ role_path }}/files/sample-stack.yml"
+    parameters:
+      ImageID: "{{ glance_image_name }}"
+      NetID: "{{ 'private' if network_mode == 'geneve' else 'sharednet1' }}"
+    wait: true
+    timeout: 900
+  when: enable_heat | bool
+
+# ---- Barbican (37) -----------------------------------------------------------
+- name: Barbican secret
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      if ! openstack --os-cloud demo secret list --name secret01 -f value -c Name | grep -qx secret01; then
+        openstack --os-cloud demo secret store --name secret01 --payload secretkey >/dev/null
+        echo CHANGED
+      fi
+    executable: /bin/bash
+  register: _secret
+  changed_when: "'CHANGED' in _secret.stdout"
+  when: enable_barbican | bool
+
+# ---- Swift (41) --------------------------------------------------------------
+- name: Swift container and object
+  when: enable_swift | bool
+  block:
+    - name: Container test-container
+      openstack.cloud.object_container:
+        cloud: swift
+        name: test-container
+    - name: Test file
+      ansible.builtin.copy:
+        dest: /root/testfile.txt
+        content: "testfile\n"
+        mode: "0644"
+    - name: Upload testfile.txt
+      openstack.cloud.object:
+        cloud: swift
+        container: test-container
+        name: testfile.txt
+        filename: /root/testfile.txt
+
+# ---- Manila (44) -------------------------------------------------------------
+- name: Manila NFS share share01
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      export OS_CLOUD=demo
+      if ! openstack share show share01 >/dev/null 2>&1; then
+        openstack share create NFS 10 --name share01 --share-type default_share_type >/dev/null
+        for i in $(seq 1 60); do
+          st=$(openstack share show share01 -f value -c status)
+          [ "$st" = available ] && break
+          [ "$st" = error ] && { echo "share01 is in error state" >&2; exit 1; }
+          sleep 5
+        done
+        openstack share access create share01 ip {{ nfs_allowed_network }} --access-level rw >/dev/null
+        echo CHANGED
+      fi
+      openstack share export location list share01 -f value -c Path
+    executable: /bin/bash
+  register: _share
+  changed_when: "'CHANGED' in _share.stdout"
+  when: enable_manila | bool
+
+# ---- Designate (47) ----------------------------------------------------------
+- name: DNS zone and A record
+  when: enable_designate | bool
+  block:
+    - name: Zone example.{{ domain }}.
+      openstack.cloud.dns_zone:
+        cloud: admin
+        name: "example.{{ domain }}."
+        email: "dnsmaster@{{ domain }}"
+        wait: true
+    - name: A record node01.example.{{ domain }}.
+      openstack.cloud.recordset:
+        cloud: admin
+        zone: "example.{{ domain }}."
+        name: "node01.example.{{ domain }}."
+        recordset_type: A
+        records: ["192.168.100.10"]
+
+# ---- Octavia with the OVN provider (51) --------------------------------------
+- name: OVN load balancer lb01 in front of Ubuntu-2404:80
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      export OS_CLOUD=demo
+      changed=0
+      wait_active() {
+        for i in $(seq 1 60); do
+          st=$(openstack loadbalancer show lb01 -f value -c provisioning_status)
+          [ "$st" = ACTIVE ] && return 0
+          [ "$st" = ERROR ] && { echo "lb01 is in ERROR" >&2; exit 1; }
+          sleep 5
+        done
+        echo "timeout waiting for lb01" >&2; exit 1
+      }
+      if ! openstack loadbalancer show lb01 >/dev/null 2>&1; then
+        openstack loadbalancer create --name lb01 --provider ovn --vip-subnet-id private-subnet >/dev/null
+        changed=1
+      fi
+      wait_active
+      if ! openstack loadbalancer listener show listener01 >/dev/null 2>&1; then
+        openstack loadbalancer listener create --name listener01 --protocol TCP --protocol-port 80 lb01 >/dev/null
+        changed=1; wait_active
+      fi
+      if ! openstack loadbalancer pool show pool01 >/dev/null 2>&1; then
+        # the OVN provider only supports SOURCE_IP_PORT (the guide uses ROUND_ROBIN with amphora)
+        openstack loadbalancer pool create --name pool01 --lb-algorithm SOURCE_IP_PORT --listener listener01 --protocol TCP >/dev/null
+        changed=1; wait_active
+      fi
+      ip=$(openstack server show Ubuntu-2404 -f json -c addresses | python3 -c '
+      import json, sys
+      v = json.load(sys.stdin)["addresses"]["private"][0]
+      print(v["addr"] if isinstance(v, dict) else v)')
+      if [ -n "$ip" ] && ! openstack loadbalancer member list pool01 -f value -c address | grep -qx "$ip"; then
+        openstack loadbalancer member create --subnet-id private-subnet --address "$ip" --protocol-port 80 pool01 >/dev/null
+        changed=1; wait_active
+      fi
+      [ $changed -eq 1 ] && echo CHANGED || true
+    executable: /bin/bash
+  register: _lb
+  changed_when: "'CHANGED' in _lb.stdout"
+  when: enable_octavia | bool and network_mode == 'geneve'

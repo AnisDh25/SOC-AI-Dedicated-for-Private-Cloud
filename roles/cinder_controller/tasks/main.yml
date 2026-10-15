@@ -1,0 +1,94 @@
+---
+# Server World flamingo2 (27) Configure Cinder (Control Node) + (31) volume types.
+
+- name: Register Cinder in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: cinder
+    ks_password: "{{ vault_service_passwords.cinder }}"
+    ks_services:
+      - {name: cinderv3, type: volumev3, description: OpenStack Block Storage, url: "https://{{ controller_fqdn }}:8776/v3/%(tenant_id)s"}
+
+- name: Cinder database
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [cinder]
+    db_user: cinder
+    db_password: "{{ vault_db_passwords.cinder }}"
+
+- name: Install cinder-api and cinder-scheduler
+  ansible.builtin.apt:
+    name: [cinder-api, cinder-scheduler, python3-cinderclient]
+    state: present
+
+- name: cinder.conf
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/cinder.conf.j2"
+    dest: /etc/cinder/cinder.conf
+    owner: root
+    group: cinder
+    mode: "0640"
+  notify: restart cinder
+
+- name: Bind cinder-api to the API bind address:8776
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [8776]
+
+- name: cinder-manage db sync
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: cinder
+    manage_cmds: ["cinder-manage db sync"]
+
+- name: Enable cinder-scheduler
+  ansible.builtin.systemd_service:
+    name: cinder-scheduler
+    state: started
+    enabled: true
+
+- name: Restart Apache before publishing the port
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish Cinder through nginx (8776)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: cinder-api
+    stream_ports: [8776]
+
+- name: Apply nginx changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Cinder API
+  ansible.builtin.uri:
+    url: "https://{{ controller_fqdn }}:8776/"
+    ca_path: "{{ tls_ca }}"
+    status_code: [200, 300]
+  register: _cinder
+  until: _cinder.status in [200, 300]
+  retries: 20
+  delay: 3
+
+- name: Volume types (Server World 31)
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      if ! openstack volume type show {{ item.name }} >/dev/null 2>&1; then
+        openstack volume type create --property volume_backend_name={{ item.backend }} {{ item.name }}
+        echo CHANGED
+      fi
+    executable: /bin/bash
+  loop: "{{ [{'name': 'lvm', 'backend': 'LVM'}] + ([{'name': 'nfs', 'backend': 'NFS'}] if enable_cinder_nfs | bool else []) }}"
+  register: _vtypes
+  changed_when: "'CHANGED' in _vtypes.stdout"
+  run_once: true

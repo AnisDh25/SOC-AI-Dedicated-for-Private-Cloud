@@ -1,0 +1,52 @@
+---
+# Register a service user, its roles, catalog services and endpoints.
+# vars:
+#   ks_user, ks_password
+#   ks_roles     (default [admin, service]) - granted on project "service"
+#   ks_services: - name: glance
+#                  type: image
+#                  description: OpenStack Image service
+#                  url: https://host:9292           (optional: no endpoints if omitted)
+#                  admin_url: https://host:8080/v1  (optional, admin interface only)
+- name: "Keystone user {{ ks_user }}"
+  openstack.cloud.identity_user:
+    name: "{{ ks_user }}"
+    password: "{{ ks_password }}"
+    domain: default
+    default_project: service
+    update_password: on_create
+  delegate_to: "{{ controller_host }}"
+  run_once: true
+  no_log: true
+
+- name: "Roles for {{ ks_user }} on project service"
+  openstack.cloud.role_assignment:
+    user: "{{ ks_user }}"
+    project: service
+    role: "{{ item }}"
+  loop: "{{ ks_roles | default(['admin', 'service']) }}"
+  delegate_to: "{{ controller_host }}"
+  run_once: true
+
+- name: "Catalog services for {{ ks_user }}"
+  openstack.cloud.catalog_service:
+    name: "{{ item.name }}"
+    service_type: "{{ item.type }}"
+    description: "{{ item.description }}"
+  loop: "{{ ks_services | default([]) }}"
+  loop_control:
+    label: "{{ item.name }} ({{ item.type }})"
+  delegate_to: "{{ controller_host }}"
+  run_once: true
+
+- name: "Endpoints for {{ ks_user }}"
+  openstack.cloud.endpoint:
+    service: "{{ item.0.name }}"
+    endpoint_interface: "{{ item.1 }}"
+    url: "{{ item.0.admin_url if (item.1 == 'admin' and item.0.admin_url is defined) else item.0.url }}"
+    region: "{{ region }}"
+  loop: "{{ ks_services | default([]) | selectattr('url', 'defined') | product(['public', 'internal', 'admin']) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} {{ item.1 }}"
+  delegate_to: "{{ controller_host }}"
+  run_once: true

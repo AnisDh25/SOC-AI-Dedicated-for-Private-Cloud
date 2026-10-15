@@ -1,0 +1,35 @@
+---
+# High-availability layout (fresh deployment):
+#   controller01-03.tekup.world  3 controllers: every API + network services,
+#                                Galera, RabbitMQ cluster, OVN RAFT cluster,
+#                                HAProxy + keepalived VIP 192.168.1.30 (openstack.tekup.world)
+#   node01/node02.tekup.world    compute
+#   storage.tekup.world          storage + NFS (Glance images, Gnocchi metrics,
+#                                Cinder NFS/backups) + Swift storage
+#
+# Use it with:  ansible-playbook -i inventory/hosts-ha.yml site.yml --ask-vault-pass
+# The network and swift_proxy groups MUST contain exactly the controllers.
+all:
+  children:
+    controller:
+      hosts: &controllers
+        controller01.tekup.world:
+        controller02.tekup.world:
+        controller03.tekup.world:
+    network:
+      hosts: *controllers
+    swift_proxy:
+      hosts: *controllers
+    compute:
+      hosts:
+        node01.tekup.world:
+        node02.tekup.world:
+    storage:
+      hosts:
+        storage.tekup.world:
+    swift_storage:
+      hosts:
+        storage.tekup.world:
+    nfs:
+      hosts:
+        storage.tekup.world:

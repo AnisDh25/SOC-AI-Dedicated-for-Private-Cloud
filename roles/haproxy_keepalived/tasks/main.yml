@@ -1,0 +1,63 @@
+---
+# HA front door: keepalived moves the VIP between controllers, HAProxy on
+# each controller listens on the VIP. Services add their own frontends in
+# /etc/haproxy/conf.d/ (os_common/tasks/nginx_stream.yml) once their backend
+# is bound to the management IP, so nothing ever fights over a port.
+
+- name: Allow binding the VIP on controllers that don't hold it
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: "1"
+    sysctl_file: /etc/sysctl.d/60-openstack-vip.conf
+    reload: true
+
+- name: Install HAProxy and keepalived
+  ansible.builtin.apt:
+    name: [haproxy, keepalived]
+    state: present
+
+- name: HAProxy conf.d directory
+  ansible.builtin.file:
+    path: /etc/haproxy/conf.d
+    state: directory
+    mode: "0755"
+
+- name: haproxy.cfg (global, defaults, stats)
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    mode: "0644"
+  notify: reload haproxy
+
+- name: Load /etc/haproxy/conf.d as well
+  ansible.builtin.lineinfile:
+    path: /etc/default/haproxy
+    regexp: '^#?\s*EXTRAOPTS='
+    line: 'EXTRAOPTS="-S /run/haproxy-master.sock -f /etc/haproxy/conf.d"'
+    create: true
+    mode: "0644"
+  notify: restart haproxy
+
+- name: keepalived.conf
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    mode: "0600"
+  notify: restart keepalived
+
+- name: Enable HAProxy and keepalived
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [haproxy, keepalived]
+
+- name: Apply changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait until the VIP answers
+  ansible.builtin.wait_for:
+    host: "{{ vip_address }}"
+    port: 1936
+    timeout: 60
+  run_once: true

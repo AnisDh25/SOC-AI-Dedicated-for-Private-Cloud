@@ -1,0 +1,203 @@
+---
+# Server World (02) Pre-Requirements + NTP + KVM prerequisites.
+
+- name: Check inventory layout
+  ansible.builtin.assert:
+    that:
+      - groups[item] | default([]) | length > 0
+    fail_msg: "Inventory group '{{ item }}' must contain at least one host"
+  loop: [controller, network, compute, storage, swift_proxy, swift_storage, nfs]
+  run_once: true
+
+- name: Check that every host defines mgmt_ip
+  ansible.builtin.assert:
+    that: hostvars[item].mgmt_ip is defined
+    fail_msg: "{{ item }} has no mgmt_ip in host_vars"
+  loop: "{{ groups['all'] }}"
+  run_once: true
+
+- name: Check the HA layout
+  ansible.builtin.assert:
+    that:
+      - groups['network'] | sort == groups['controller'] | sort
+      - groups['swift_proxy'] | sort == groups['controller'] | sort
+      - groups['controller'] | length is odd
+    fail_msg: >-
+      HA (more than one controller) needs an odd number of controllers (3 recommended,
+      for Galera/RabbitMQ/OVN quorum) and the network and swift_proxy groups must
+      contain exactly the controllers (HAProxy runs there). See inventory/hosts-ha.yml.
+  when: ha_enabled | bool
+  run_once: true
+
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname_short }}"
+
+- name: Drop the 127.0.1.1 hostname mapping (FQDN must resolve to mgmt_ip)
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.1\.1\s'
+    state: absent
+
+- name: /etc/hosts entries for all OpenStack nodes
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED OPENSTACK NODES"
+    block: |
+      {% if ha_enabled | bool %}
+      {{ vip_address }} {{ vip_fqdn }} {{ vip_fqdn.split('.')[0] }}
+      {% endif %}
+      {% for h in groups['all'] %}
+      {{ hostvars[h].mgmt_ip }} {{ h }} {{ h.split('.')[0] }}
+      {% endfor %}
+
+- name: Apache listens on the management IP only (HA, before apache2 is installed)
+  when: ha_enabled | bool and (is_controller | bool or is_network | bool)
+  block:
+    - name: /etc/apache2
+      ansible.builtin.file:
+        path: /etc/apache2
+        state: directory
+        mode: "0755"
+    - name: ports.conf (kept by dpkg when apache2 is installed later)
+      ansible.builtin.copy:
+        dest: /etc/apache2/ports.conf
+        mode: "0644"
+        content: |
+          # Managed by Ansible - HAProxy owns the VIP on :80/:443
+          Listen {{ mgmt_ip }}:80
+          <IfModule ssl_module>
+                  Listen {{ mgmt_ip }}:443
+          </IfModule>
+          <IfModule mod_gnutls.c>
+                  Listen {{ mgmt_ip }}:443
+          </IfModule>
+
+- name: Set timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+
+- name: apt cache auto-detect script (cache if reachable, else direct)
+  ansible.builtin.copy:
+    dest: /usr/local/bin/apt-proxy-detect
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      # Managed by Ansible: use apt-cacher-ng on {{ apt_cache_host }}:{{ apt_cache_port }} when it answers.
+      if timeout 2 bash -c '</dev/tcp/{{ apt_cache_host }}/{{ apt_cache_port }}' 2>/dev/null; then
+        echo "http://{{ apt_cache_host }}:{{ apt_cache_port }}"
+      else
+        echo DIRECT
+      fi
+  when: apt_cache_host | length > 0
+
+- name: Route apt HTTP downloads through the cache
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/01proxy
+    mode: "0644"
+    content: |
+      // Managed by Ansible (apt-cacher-ng on the workstation)
+      Acquire::http::Proxy-Auto-Detect "/usr/local/bin/apt-proxy-detect";
+  when: apt_cache_host | length > 0
+
+- name: No apt cache configured
+  ansible.builtin.file:
+    path: /etc/apt/apt.conf.d/01proxy
+    state: absent
+  when: apt_cache_host | length == 0
+
+- name: Stop automatic apt runs (they hold the dpkg lock during the deploy)
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: [apt-daily.timer, apt-daily-upgrade.timer, unattended-upgrades.service]
+  failed_when: false
+
+- name: Wait for a running apt/dpkg to release its lock
+  ansible.builtin.shell:
+    cmd: |
+      for i in $(seq 1 120); do
+        fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1 || exit 0
+        sleep 5
+      done
+      exit 1
+  changed_when: false
+
+- name: Install chrony
+  ansible.builtin.apt:
+    name: chrony
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Configure NTP servers
+  ansible.builtin.copy:
+    dest: /etc/chrony/sources.d/openstack.sources
+    content: |
+      {% for s in ntp_servers %}
+      server {{ s }} iburst
+      {% endfor %}
+    mode: "0644"
+  when: ntp_servers | length > 0
+  register: _chrony_sources
+
+- name: Enable chrony
+  ansible.builtin.systemd_service:
+    name: chrony
+    state: "{{ 'restarted' if _chrony_sources is changed else 'started' }}"
+    enabled: true
+
+- name: Install software-properties-common
+  ansible.builtin.apt:
+    name: software-properties-common
+    state: latest   # older 0.99.48 does not know cloud-archive:flamingo
+
+- name: Look for the Ubuntu Cloud Archive source
+  ansible.builtin.find:
+    paths: /etc/apt/sources.list.d
+    patterns: "cloudarchive-{{ openstack_release }}*"
+  register: _uca
+
+- name: Add Ubuntu Cloud Archive ({{ openstack_release }})
+  ansible.builtin.command: "add-apt-repository -y cloud-archive:{{ openstack_release }}"
+  when: _uca.matched == 0
+  changed_when: true
+
+- name: apt update && apt upgrade
+  ansible.builtin.apt:
+    update_cache: true
+    upgrade: "yes"
+
+- name: Base packages
+  ansible.builtin.apt:
+    name:
+      - python3-openstackclient
+      - python3-openstacksdk
+      - python3-pymysql
+      - python3-cryptography
+      - crudini
+    state: present
+
+- name: KVM hypervisor packages (compute nodes)
+  ansible.builtin.apt:
+    name: [qemu-system-x86, qemu-system-data, libvirt-daemon-system, qemu-utils]
+    state: present
+  when: is_compute | bool
+
+- name: Check hardware virtualization (compute nodes)
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: _kvm
+  when: is_compute | bool
+
+- name: Fail without /dev/kvm unless qemu fallback is allowed
+  ansible.builtin.assert:
+    that: _kvm.stat.exists or nova_allow_qemu_fallback | bool
+    fail_msg: "/dev/kvm is missing (enable nested virtualization) or set nova_allow_qemu_fallback: true"
+  when: is_compute | bool
+
+- name: Select libvirt virt_type
+  ansible.builtin.set_fact:
+    nova_virt_type: "{{ 'kvm' if _kvm.stat.exists else 'qemu' }}"
+  when: is_compute | bool

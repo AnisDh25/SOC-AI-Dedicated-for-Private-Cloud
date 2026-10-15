@@ -1,0 +1,7 @@
+---
+# ctl2 - network node (multi-node inventory only)
+ansible_host: 10.0.0.50
+ansible_user: ubuntu
+mgmt_ip: 10.0.0.50
+# Unaddressed NIC for the provider/external network (gateway chassis).
+provider_interface: eth1

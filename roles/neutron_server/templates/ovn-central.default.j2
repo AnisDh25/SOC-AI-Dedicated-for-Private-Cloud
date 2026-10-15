@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# OVN NB/SB clustered (RAFT) databases on every network node. The first
+# network node creates the cluster, the others join it. Clients connect with
+# "{{ ovn_nb_connection }}" / "{{ ovn_sb_connection }}".
+OVN_CTL_OPTS=" \
+  --db-nb-addr={{ mgmt_ip }} --db-sb-addr={{ mgmt_ip }} \
+  --db-nb-cluster-local-addr={{ mgmt_ip }} --db-sb-cluster-local-addr={{ mgmt_ip }} \
+  --db-nb-create-insecure-remote=yes --db-sb-create-insecure-remote=yes \
+{% if inventory_hostname != network_host %}
+  --db-nb-cluster-remote-addr={{ network_ip }} --db-sb-cluster-remote-addr={{ network_ip }} \
+{% endif %}
+  --ovn-northd-nb-db={{ ovn_nb_connection }} \
+  --ovn-northd-sb-db={{ ovn_sb_connection }}"

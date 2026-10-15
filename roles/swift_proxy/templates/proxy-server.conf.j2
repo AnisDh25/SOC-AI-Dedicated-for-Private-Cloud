@@ -1,0 +1,104 @@
+# {{ ansible_managed }}
+# Server World (39) proxy-server.conf. authtoken + keystoneauth are added to
+# the pipeline so Keystone users (swiftoperator role) can use the proxy.
+[DEFAULT]
+bind_ip = {{ api_bind_host }}
+bind_port = 8080
+keep_idle = 600
+bind_timeout = 30
+backlog = 4096
+swift_dir = /etc/swift
+user = swift
+
+[pipeline:main]
+pipeline = catch_errors gatekeeper healthcheck proxy-logging cache listing_formats container_sync bulk ratelimit authtoken keystoneauth copy container-quotas account-quotas slo dlo versioned_writes symlink proxy-logging proxy-server
+
+[app:proxy-server]
+use = egg:swift#proxy
+allow_account_management = true
+account_autocreate = true
+
+[filter:authtoken]
+paste.filter_factory = keystonemiddleware.auth_token:filter_factory
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = swift
+password = {{ vault_service_passwords.swift }}
+delay_auth_decision = True
+insecure = false
+
+[filter:keystoneauth]
+use = egg:swift#keystoneauth
+operator_roles = admin,swiftoperator
+
+[filter:s3api]
+use = egg:swift#s3api
+
+[filter:s3token]
+use = egg:swift#s3token
+reseller_prefix = AUTH_
+delay_auth_decision = False
+auth_uri = {{ keystone_url }}/v3
+http_timeout = 10.0
+auth_url = {{ keystone_url }}
+auth_type = password
+project_domain_name = Default
+project_domain_id = default
+user_domain_name = Default
+project_name = service
+username = swift
+password = {{ vault_service_passwords.swift }}
+
+[filter:healthcheck]
+use = egg:swift#healthcheck
+
+[filter:cache]
+use = egg:swift#memcache
+memcache_servers = {{ memcached_servers }}
+
+[filter:ratelimit]
+use = egg:swift#ratelimit
+
+[filter:catch_errors]
+use = egg:swift#catch_errors
+
+[filter:proxy-logging]
+use = egg:swift#proxy_logging
+
+[filter:bulk]
+use = egg:swift#bulk
+
+[filter:slo]
+use = egg:swift#slo
+
+[filter:dlo]
+use = egg:swift#dlo
+
+[filter:container-quotas]
+use = egg:swift#container_quotas
+
+[filter:account-quotas]
+use = egg:swift#account_quotas
+
+[filter:gatekeeper]
+use = egg:swift#gatekeeper
+
+[filter:container_sync]
+use = egg:swift#container_sync
+
+[filter:versioned_writes]
+use = egg:swift#versioned_writes
+
+[filter:copy]
+use = egg:swift#copy
+
+[filter:listing_formats]
+use = egg:swift#listing_formats
+
+[filter:symlink]
+use = egg:swift#symlink

@@ -1,0 +1,38 @@
+---
+# Server World flamingo3 (32) Cinder Backup Service (NFS backend).
+
+- name: Install cinder-backup
+  ansible.builtin.apt:
+    name: cinder-backup
+    state: present
+
+- name: NFS client
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nfs_client.yml
+
+- name: cinder.conf (backup settings are rendered by the shared template)
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/cinder.conf.j2"
+    dest: /etc/cinder/cinder.conf
+    owner: root
+    group: cinder
+    mode: "0640"
+  notify: restart cinder
+
+- name: Enable cinder-backup
+  ansible.builtin.systemd_service:
+    name: cinder-backup
+    state: started
+    enabled: true
+
+- name: Restart cinder-backup now
+  ansible.builtin.meta: flush_handlers
+
+- name: Backup mount base directory
+  ansible.builtin.file:
+    path: /var/lib/cinder/backup_nfs
+    state: directory
+    owner: cinder
+    group: cinder
+    mode: "0755"

@@ -1,0 +1,39 @@
+# {{ ansible_managed }}
+[DEFAULT]
+bind_host = {{ api_bind_host }}
+transport_url = {{ rabbit_url }}
+enabled_backends = fs:file
+
+[glance_store]
+default_backend = fs
+
+[fs]
+filesystem_store_datadir = /var/lib/glance/images/
+
+[database]
+connection = mysql+pymysql://glance:{{ vault_db_passwords.glance }}@{{ controller_fqdn }}:3306/glance
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = glance
+password = {{ vault_service_passwords.glance }}
+insecure = false
+
+[paste_deploy]
+flavor = keystone
+
+[oslo_policy]
+enforce_new_defaults = true
+{% if enable_telemetry | bool %}
+
+# Server World (56) Ceilometer for Glance
+[oslo_messaging_notifications]
+driver = messagingv2
+transport_url = {{ rabbit_url }}
+{% endif %}

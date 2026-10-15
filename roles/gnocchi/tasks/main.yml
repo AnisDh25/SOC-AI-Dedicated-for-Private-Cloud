@@ -1,0 +1,95 @@
+---
+# Server World flamingo4 (52) Configure Gnocchi.
+
+- name: Register Gnocchi in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: gnocchi
+    ks_password: "{{ vault_service_passwords.gnocchi }}"
+    ks_services:
+      - {name: gnocchi, type: metric, description: Metric Service, url: "https://{{ network_fqdn }}:8041"}
+
+- name: Gnocchi database
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [gnocchi]
+    db_user: gnocchi
+    db_password: "{{ vault_db_passwords.gnocchi }}"
+
+- name: Metric store shared by all network nodes over NFS (HA)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: shared_state_dir.yml
+  vars:
+    svc_user: gnocchi
+    svc_uid: "{{ gnocchi_uid }}"
+    svc_home: /var/lib/gnocchi
+    nfs_export: "{{ nfs_gnocchi_path }}"
+    mount_path: /var/lib/gnocchi
+  when: ha_enabled | bool
+
+- name: Install Gnocchi
+  ansible.builtin.apt:
+    name: [gnocchi-api, gnocchi-metricd, python3-gnocchiclient, apache2, libapache2-mod-wsgi-py3]
+    state: present
+
+- name: gnocchi.conf
+  ansible.builtin.template:
+    src: gnocchi.conf.j2
+    dest: /etc/gnocchi/gnocchi.conf
+    owner: root
+    group: gnocchi
+    mode: "0640"
+  notify: restart gnocchi
+
+- name: Bind gnocchi-api to the API bind address:8041
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [8041]
+
+- name: Enable mod_wsgi
+  community.general.apache2_module:
+    name: wsgi
+    state: present
+    ignore_configcheck: true
+  notify: restart apache2
+
+- name: Enable the gnocchi-api site
+  ansible.builtin.command: a2ensite gnocchi-api
+  args:
+    creates: /etc/apache2/sites-enabled/gnocchi-api.conf
+  notify: restart apache2
+
+- name: gnocchi-upgrade
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: gnocchi
+    manage_cmds: ["gnocchi-upgrade"]
+
+- name: Enable gnocchi-metricd
+  ansible.builtin.systemd_service:
+    name: gnocchi-metricd
+    state: started
+    enabled: true
+
+- name: Restart Apache before publishing the port
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish Gnocchi through nginx (8041)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: gnocchi-api
+    stream_ports: [8041]
+
+- name: Apply nginx changes
+  ansible.builtin.meta: flush_handlers

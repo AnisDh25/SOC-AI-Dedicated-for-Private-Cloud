@@ -1,0 +1,26 @@
+---
+# Publish API ports on the public address:
+#   single controller: nginx stream + TLS on the management IP -> 127.0.0.1:<port>
+#   HA:                HAProxy on the VIP -> <mgmt_ip>:<port> of every host in this play
+# Call only after the backend has been bound to api_bind_host (see apache_listen).
+# vars:
+#   stream_name, stream_ports (list of ints)
+#   stream_mode     tls (default, terminate TLS) | passthrough (backend does TLS) | plain
+#   stream_balance  roundrobin (default) | source (sticky, e.g. noVNC, Horizon)
+#   stream_backup   false (default) | true: first host active, others backup (Galera)
+#   stream_timeout  optional client/server timeout override (e.g. 90m for MariaDB)
+- name: "Nginx TLS stream for {{ stream_name }}"
+  ansible.builtin.template:
+    src: stream.conf.j2
+    dest: "/etc/nginx/stream.d/{{ stream_name }}.conf"
+    mode: "0644"
+  when: not ha_enabled | bool
+  notify: reload nginx
+
+- name: "HAProxy frontend for {{ stream_name }} on the VIP"
+  ansible.builtin.template:
+    src: haproxy-listen.cfg.j2
+    dest: "/etc/haproxy/conf.d/{{ stream_name }}.cfg"
+    mode: "0644"
+  when: ha_enabled | bool
+  notify: reload haproxy

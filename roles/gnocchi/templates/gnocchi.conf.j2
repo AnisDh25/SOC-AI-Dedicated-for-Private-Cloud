@@ -1,0 +1,36 @@
+# {{ ansible_managed }}
+[DEFAULT]
+log_dir = /var/log/gnocchi
+{% if ha_enabled | bool %}
+# several gnocchi-metricd workers share the NFS store: coordinate through MariaDB
+coordination_url = mysql://gnocchi:{{ vault_db_passwords.gnocchi }}@{{ controller_fqdn }}:3306/gnocchi
+{% endif %}
+
+[api]
+auth_mode = keystone
+
+[database]
+backend = sqlalchemy
+
+[indexer]
+url = mysql+pymysql://gnocchi:{{ vault_db_passwords.gnocchi }}@{{ controller_fqdn }}:3306/gnocchi
+
+[storage]
+driver = file
+file_basepath = /var/lib/gnocchi
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = gnocchi
+password = {{ vault_service_passwords.gnocchi }}
+service_token_roles_required = true
+insecure = false
+
+[oslo_policy]
+enforce_new_defaults = true

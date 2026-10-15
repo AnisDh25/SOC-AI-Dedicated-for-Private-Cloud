@@ -1,0 +1,39 @@
+# {{ ansible_managed }}
+global_defs {
+    router_id {{ inventory_hostname_short }}
+    enable_script_security
+    script_user root
+}
+
+vrrp_script chk_haproxy {
+    script "/usr/bin/pgrep -x haproxy"
+    interval 2
+    fall 2
+    rise 2
+    weight -30
+}
+
+vrrp_instance VI_OPENSTACK {
+    state BACKUP
+    interface {{ vip_interface }}
+    virtual_router_id {{ vip_router_id }}
+    # controller01 is preferred, then 02, 03 ...
+    priority {{ 150 - 10 * groups['controller'].index(inventory_hostname) }}
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass {{ vault_keepalived_password[:8] }}
+    }
+    unicast_src_ip {{ mgmt_ip }}
+    unicast_peer {
+{% for h in groups['controller'] if h != inventory_hostname %}
+        {{ hostvars[h].mgmt_ip }}
+{% endfor %}
+    }
+    virtual_ipaddress {
+        {{ vip_address }}/{{ vip_prefix }} dev {{ vip_interface }}
+    }
+    track_script {
+        chk_haproxy
+    }
+}

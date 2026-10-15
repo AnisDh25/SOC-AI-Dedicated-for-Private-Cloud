@@ -1,0 +1,55 @@
+---
+# The NFS server that Server World (30)(32) assumes exists ("nfs.srv.world").
+# In HA it also holds the Glance image store and the Gnocchi metric store,
+# shared by every controller.
+
+- name: Exports for this deployment
+  ansible.builtin.set_fact:
+    _nfs_exports: >-
+      {{ ([{'path': nfs_share_path}] if enable_cinder_nfs | bool else [])
+         + ([{'path': nfs_backup_path}] if enable_cinder_backup | bool else [])
+         + ([{'path': nfs_glance_path, 'owner': glance_uid}] if ha_enabled | bool else [])
+         + ([{'path': nfs_gnocchi_path, 'owner': gnocchi_uid}] if (ha_enabled | bool and enable_telemetry | bool) else []) }}
+
+- name: Install the NFS server
+  ansible.builtin.apt:
+    name: nfs-kernel-server
+    state: present
+
+- name: idmapd domain
+  ansible.builtin.lineinfile:
+    path: /etc/idmapd.conf
+    regexp: '^#?\s*Domain\s*='
+    line: "Domain = {{ domain }}"
+    insertafter: '^\[General\]'
+  notify: restart nfs-idmapd
+
+- name: Exported directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(omit) }}"
+    group: "{{ item.owner | default(omit) }}"
+    mode: "{{ '0750' if item.owner is defined else '0777' }}"
+  loop: "{{ _nfs_exports }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: /etc/exports
+  ansible.builtin.lineinfile:
+    path: /etc/exports
+    regexp: '^{{ item.path | regex_escape }}\s'
+    line: "{{ item.path }} {{ nfs_allowed_network }}(rw,sync,no_root_squash,no_subtree_check)"
+  loop: "{{ _nfs_exports }}"
+  loop_control:
+    label: "{{ item.path }}"
+  notify: reload nfs exports
+
+- name: Enable nfs-server
+  ansible.builtin.systemd_service:
+    name: nfs-server
+    state: started
+    enabled: true
+
+- name: Apply exports now
+  ansible.builtin.meta: flush_handlers

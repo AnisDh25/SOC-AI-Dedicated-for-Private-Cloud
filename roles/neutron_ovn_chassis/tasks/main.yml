@@ -1,0 +1,71 @@
+---
+# Server World (11) / flamingo2 (24): OVN chassis (ovn-controller) on compute
+# nodes (+ network node as gateway), OVN metadata agent on compute nodes.
+
+- name: Install OVN host
+  ansible.builtin.apt:
+    name: [ovn-host, openvswitch-switch]
+    state: present
+
+- name: Install Neutron agents (compute)
+  ansible.builtin.apt:
+    name: [neutron-common, neutron-plugin-ml2, neutron-dhcp-agent, neutron-ovn-metadata-agent]
+    state: present
+  when: is_compute | bool
+
+- name: Neutron configuration (compute)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: neutron_common.yml
+  when: is_compute | bool
+
+- name: OVN metadata agent
+  ansible.builtin.template:
+    src: neutron_ovn_metadata_agent.ini.j2
+    dest: /etc/neutron/neutron_ovn_metadata_agent.ini
+    owner: root
+    group: neutron
+    mode: "0640"
+  when: is_compute | bool
+  notify: restart neutron
+
+- name: Open vSwitch OVSDB remote on 127.0.0.1:6640
+  ansible.builtin.lineinfile:
+    path: /etc/default/openvswitch-switch
+    regexp: '^#?\s*OVS_CTL_OPTS='
+    line: >-
+      OVS_CTL_OPTS="--ovsdb-server-options='--remote=ptcp:6640:127.0.0.1'"
+  notify: restart openvswitch
+
+- name: Restart Open vSwitch now
+  ansible.builtin.meta: flush_handlers
+
+- name: Start OVN controller
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [openvswitch-switch, ovn-controller, ovn-host]
+
+- name: Point ovn-controller at the southbound DB
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: ovs_external_ids.yml
+  vars:
+    ovs_external_ids: >-
+      {{ {'ovn-remote': ovn_sb_connection,
+          'ovn-encap-type': 'geneve',
+          'ovn-encap-ip': mgmt_ip}
+         | combine({'ovn-cms-options': 'enable-chassis-as-gw'}
+                   if (is_network | bool or compute_is_gateway_chassis | bool) else {}) }}
+
+- name: Enable Neutron agents (compute)
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [neutron-ovn-metadata-agent, neutron-dhcp-agent]
+  when: is_compute | bool
+
+- name: Apply changes
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,77 @@
+# {{ ansible_managed }}
+# Server World flamingo2 (27)(28)(29), flamingo3 (30)(31)(32), flamingo4 (57).
+[DEFAULT]
+{% if is_storage | bool %}
+my_ip = {{ mgmt_ip }}
+glance_api_servers = https://{{ controller_fqdn }}:9292
+enabled_backends = {{ cinder_backends | join(',') }}
+{% endif %}
+rootwrap_config = /etc/cinder/rootwrap.conf
+api_paste_config = /etc/cinder/api-paste.ini
+state_path = /var/lib/cinder
+auth_strategy = keystone
+transport_url = {{ rabbit_url }}
+enable_v3_api = True
+default_volume_type = lvm
+{% if is_storage | bool and enable_cinder_backup | bool %}
+backup_driver = cinder.backup.drivers.nfs.NFSBackupDriver
+backup_mount_point_base = $state_path/backup_nfs
+backup_share = {{ nfs_fqdn }}:{{ nfs_backup_path }}
+{% endif %}
+
+[database]
+connection = mysql+pymysql://cinder:{{ vault_db_passwords.cinder }}@{{ controller_fqdn }}:3306/cinder
+
+[service_user]
+send_service_user_token = true
+auth_url = {{ keystone_url }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = cinder
+password = {{ vault_service_passwords.cinder }}
+insecure = false
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = cinder
+password = {{ vault_service_passwords.cinder }}
+insecure = false
+
+[oslo_concurrency]
+lock_path = $state_path/tmp
+
+[oslo_policy]
+enforce_new_defaults = true
+{% if is_storage | bool %}
+
+[lvm]
+target_helper = lioadm
+target_protocol = iscsi
+target_ip_address = $my_ip
+volume_backend_name = LVM
+volume_group = {{ cinder_vg }}
+volume_driver = cinder.volume.drivers.lvm.LVMVolumeDriver
+volumes_dir = $state_path/volumes
+{% if enable_cinder_nfs | bool %}
+
+[nfs]
+volume_driver = cinder.volume.drivers.nfs.NfsDriver
+volume_backend_name = NFS
+nfs_shares_config = /etc/cinder/nfs_shares
+nfs_mount_point_base = $state_path/mnt_nfs
+{% endif %}
+{% endif %}
+{% if enable_telemetry | bool %}
+
+[oslo_messaging_notifications]
+driver = messagingv2
+transport_url = {{ rabbit_url }}
+{% endif %}

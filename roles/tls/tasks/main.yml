@@ -1,0 +1,127 @@
+---
+# Replaces Server World's Let's Encrypt certificates with a self-signed CA
+# (created once on the controller) and one server certificate per host.
+
+- name: TLS directory
+  ansible.builtin.file:
+    path: "{{ tls_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: CA on the controller
+  run_once: true
+  delegate_to: "{{ controller_host }}"
+  block:
+    - name: CA private key
+      community.crypto.openssl_privatekey:
+        path: "{{ tls_ca_key }}"
+        mode: "0600"
+
+    - name: CA CSR
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ tls_ca_key }}"
+        common_name: "{{ tls_ca_common_name }}"
+        use_common_name_for_san: false
+        basic_constraints: ["CA:TRUE"]
+        basic_constraints_critical: true
+        key_usage: [keyCertSign, cRLSign]
+        key_usage_critical: true
+      register: _ca_csr
+      changed_when: false
+
+    - name: CA certificate (10 years)
+      community.crypto.x509_certificate:
+        path: "{{ tls_ca }}"
+        csr_content: "{{ _ca_csr.csr }}"
+        privatekey_path: "{{ tls_ca_key }}"
+        provider: selfsigned
+        selfsigned_not_after: "+3650d"
+        mode: "0644"
+
+    - name: Read CA certificate
+      ansible.builtin.slurp:
+        src: "{{ tls_ca }}"
+      register: _ca_pem
+
+- name: Distribute CA certificate
+  ansible.builtin.copy:
+    content: "{{ _ca_pem.content | b64decode }}"
+    dest: "{{ item }}"
+    mode: "0644"
+  loop:
+    - "{{ tls_ca }}"
+    - /usr/local/share/ca-certificates/openstack-lab-ca.crt
+  register: _ca_copy
+
+- name: Trust CA system-wide
+  ansible.builtin.command: update-ca-certificates
+  when: _ca_copy is changed
+  changed_when: true
+
+- name: Host private key
+  community.crypto.openssl_privatekey:
+    path: "{{ tls_key }}"
+    mode: "0600"
+
+- name: Host CSR
+  community.crypto.openssl_csr_pipe:
+    privatekey_path: "{{ tls_key }}"
+    common_name: "{{ fqdn }}"
+    subject_alt_name: >-
+      {{ ['DNS:' ~ fqdn, 'DNS:' ~ inventory_hostname_short, 'IP:' ~ mgmt_ip]
+         + (['DNS:' ~ vip_fqdn, 'IP:' ~ vip_address] if (ha_enabled | bool and is_controller | bool) else [])
+         + tls_extra_sans }}
+    extended_key_usage: [serverAuth, clientAuth]
+  register: _host_csr
+  changed_when: false
+
+- name: Read existing host certificate
+  ansible.builtin.slurp:
+    src: "{{ tls_cert }}"
+  register: _host_cert_existing
+  failed_when: false
+
+- name: Sign host certificate with the CA
+  community.crypto.x509_certificate_pipe:
+    content: "{{ (_host_cert_existing.content | b64decode) if _host_cert_existing.content is defined else omit }}"
+    csr_content: "{{ _host_csr.csr }}"
+    provider: ownca
+    ownca_path: "{{ tls_ca }}"
+    ownca_privatekey_path: "{{ tls_ca_key }}"
+    ownca_not_after: "+3650d"
+  delegate_to: "{{ controller_host }}"
+  register: _host_cert
+
+- name: Write host certificate and full chain
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - {dest: "{{ tls_cert }}", content: "{{ _host_cert.certificate }}"}
+    - {dest: "{{ tls_fullchain }}", content: "{{ _host_cert.certificate }}{{ _ca_pem.content | b64decode }}"}
+  loop_control:
+    label: "{{ item.dest }}"
+
+- name: Read the host key for the HAProxy bundle
+  ansible.builtin.slurp:
+    src: "{{ tls_key }}"
+  register: _host_key
+  no_log: true
+  when: ha_enabled | bool and is_controller | bool
+
+- name: HAProxy PEM bundle (certificate + CA + key)
+  ansible.builtin.copy:
+    dest: "{{ tls_haproxy_pem }}"
+    content: "{{ _host_cert.certificate }}{{ _ca_pem.content | b64decode }}{{ _host_key.content | b64decode }}"
+    mode: "0600"
+  no_log: true
+  when: ha_enabled | bool and is_controller | bool
+
+- name: Copy CA to the Ansible control machine (import it into your browser for Horizon)
+  ansible.builtin.fetch:
+    src: "{{ tls_ca }}"
+    dest: "{{ playbook_dir }}/openstack-lab-ca.crt"
+    flat: true
+  run_once: true
+  delegate_to: "{{ controller_host }}"

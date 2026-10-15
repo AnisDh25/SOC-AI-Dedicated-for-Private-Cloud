@@ -1,0 +1,83 @@
+---
+# Server World (02): RabbitMQ user "openstack".
+# HA: one cluster across the controllers (same Erlang cookie, others join the
+# first node) with every queue mirrored on all nodes.
+
+- name: Install RabbitMQ
+  ansible.builtin.apt:
+    name: rabbitmq-server
+    state: present
+
+- name: Shared Erlang cookie (HA)
+  when: ha_enabled | bool
+  block:
+    - name: Read the current Erlang cookie
+      ansible.builtin.slurp:
+        src: /var/lib/rabbitmq/.erlang.cookie
+      register: _cookie
+      failed_when: false
+      no_log: true
+
+    - name: Replace the cookie while RabbitMQ is stopped
+      when: (_cookie.content | default('') | b64decode | trim) != vault_rabbit_erlang_cookie
+      block:
+        - name: Stop RabbitMQ
+          ansible.builtin.systemd_service:
+            name: rabbitmq-server
+            state: stopped
+        - name: Write the Erlang cookie
+          ansible.builtin.copy:
+            dest: /var/lib/rabbitmq/.erlang.cookie
+            content: "{{ vault_rabbit_erlang_cookie }}"
+            owner: rabbitmq
+            group: rabbitmq
+            mode: "0400"
+          no_log: true
+
+- name: Enable RabbitMQ
+  ansible.builtin.systemd_service:
+    name: rabbitmq-server
+    state: started
+    enabled: true
+
+- name: Join the RabbitMQ cluster (HA)
+  when: ha_enabled | bool and inventory_hostname != controller_host
+  block:
+    - name: Current cluster membership
+      ansible.builtin.command: rabbitmqctl cluster_status
+      register: _rmq_status
+      changed_when: false
+
+    - name: Join rabbit@{{ controller_host.split('.')[0] }}
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          rabbitmqctl stop_app
+          rabbitmqctl join_cluster rabbit@{{ controller_host.split('.')[0] }}
+          rabbitmqctl start_app
+      when: ("rabbit@" ~ controller_host.split('.')[0]) not in _rmq_status.stdout
+      throttle: 1
+      changed_when: true
+
+- name: RabbitMQ user openstack
+  community.rabbitmq.rabbitmq_user:
+    user: openstack
+    password: "{{ vault_rabbit_password }}"
+    vhost: /
+    configure_priv: ".*"
+    read_priv: ".*"
+    write_priv: ".*"
+    state: present
+  no_log: true
+  run_once: true
+
+- name: Mirror every queue on all nodes (HA)
+  community.rabbitmq.rabbitmq_policy:
+    name: ha-all
+    vhost: /
+    pattern: '^(?!amq\.).*'
+    tags:
+      ha-mode: all
+      ha-sync-mode: automatic
+  when: ha_enabled | bool
+  run_once: true

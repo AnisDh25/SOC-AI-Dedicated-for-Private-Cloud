@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+{% for port in stream_ports %}
+upstream {{ stream_name }}-{{ port }} {
+    server 127.0.0.1:{{ port }};
+}
+server {
+    listen {{ mgmt_ip }}:{{ port }} ssl;
+    proxy_pass {{ stream_name }}-{{ port }};
+}
+{% endfor %}

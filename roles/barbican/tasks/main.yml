@@ -1,0 +1,64 @@
+---
+# Server World flamingo3 (36) Configure Barbican.
+
+- name: Register Barbican in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: barbican
+    ks_password: "{{ vault_service_passwords.barbican }}"
+    ks_services:
+      - {name: barbican, type: key-manager, description: OpenStack Key Manager, url: "https://{{ controller_fqdn }}:9311"}
+
+- name: Barbican database
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [barbican]
+    db_user: barbican
+    db_password: "{{ vault_db_passwords.barbican }}"
+
+- name: Install barbican-api
+  ansible.builtin.apt:
+    name: [barbican-api, python3-barbicanclient]
+    state: present
+
+- name: barbican.conf
+  ansible.builtin.template:
+    src: barbican.conf.j2
+    dest: /etc/barbican/barbican.conf
+    owner: root
+    group: barbican
+    mode: "0640"
+  notify: restart apache2
+
+- name: Bind barbican-api to the API bind address:9311/9312
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [9311, 9312]
+
+- name: barbican-manage db upgrade
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: barbican
+    manage_cmds: ["barbican-manage db upgrade"]
+
+- name: Restart Apache before publishing the ports
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish Barbican through nginx (9311, 9312)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: barbican-api
+    stream_ports: [9311, 9312]
+
+- name: Apply nginx changes
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,3 @@
+# Ansible playbooks, templates and scripts run on Linux: always LF
+* text=auto eol=lf
+*.png binary

@@ -1,0 +1,39 @@
+---
+# HA only: a service directory shared by every controller over NFS (from the
+# storage node). The service user is created first with a fixed UID/GID so
+# the package reuses it and file ownership matches on every controller.
+# vars: svc_user, svc_uid, svc_home, nfs_export, mount_path
+- name: "Group {{ svc_user }} ({{ svc_uid }})"
+  ansible.builtin.group:
+    name: "{{ svc_user }}"
+    gid: "{{ svc_uid }}"
+    system: true
+
+- name: "User {{ svc_user }} ({{ svc_uid }})"
+  ansible.builtin.user:
+    name: "{{ svc_user }}"
+    uid: "{{ svc_uid }}"
+    group: "{{ svc_user }}"
+    system: true
+    home: "{{ svc_home }}"
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: NFS client
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nfs_client.yml
+
+- name: "Mount point {{ mount_path }}"
+  ansible.builtin.file:
+    path: "{{ mount_path }}"
+    state: directory
+    mode: "0750"
+
+- name: "Mount {{ nfs_fqdn }}:{{ nfs_export }} on {{ mount_path }}"
+  ansible.posix.mount:
+    path: "{{ mount_path }}"
+    src: "{{ nfs_fqdn }}:{{ nfs_export }}"
+    fstype: nfs4
+    opts: defaults,_netdev,hard
+    state: mounted

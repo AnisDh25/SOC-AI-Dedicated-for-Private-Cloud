@@ -1,0 +1,109 @@
+---
+# Server World flamingo4 (58) Configure CloudKitty, (59) hashmap module.
+
+- name: Register CloudKitty in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: cloudkitty
+    ks_password: "{{ vault_service_passwords.cloudkitty }}"
+    ks_services:
+      - {name: cloudkitty, type: rating, description: OpenStack Rating Service, url: "http://{{ network_fqdn }}:8889"}
+
+- name: Role rating (granted to admin so it can manage rating rules)
+  run_once: true
+  delegate_to: "{{ controller_host }}"
+  block:
+    - name: Role rating
+      openstack.cloud.identity_role:
+        name: rating
+    - name: admin has rating on project admin
+      openstack.cloud.role_assignment:
+        user: admin
+        project: admin
+        role: rating
+
+- name: CloudKitty database
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [cloudkitty]
+    db_user: cloudkitty
+    db_password: "{{ vault_db_passwords.cloudkitty }}"
+
+- name: Install CloudKitty
+  ansible.builtin.apt:
+    name: [cloudkitty-api, cloudkitty-processor, python3-cloudkittyclient]
+    state: present
+
+- name: cloudkitty.conf and metrics.yml
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/cloudkitty/{{ item }}"
+    owner: root
+    group: cloudkitty
+    mode: "0640"
+  loop: [cloudkitty.conf, metrics.yml]
+  notify: restart cloudkitty
+
+- name: Detect how cloudkitty-api is packaged
+  ansible.builtin.stat:
+    path: /etc/apache2/sites-available/cloudkitty-api.conf
+  register: _ck_site
+
+- name: CloudKitty units to restart
+  ansible.builtin.set_fact:
+    cloudkitty_units: "{{ (['apache2'] if _ck_site.stat.exists else ['cloudkitty-api']) + ['cloudkitty-processor'] }}"
+
+- name: CloudKitty database and storage init
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: cloudkitty
+    manage_cmds:
+      - cloudkitty-dbsync upgrade
+      - cloudkitty-storage-init
+
+- name: Bind cloudkitty-api to the management IP if it runs under Apache (HA)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [8889]
+  when: ha_enabled | bool
+
+- name: Enable CloudKitty
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: "{{ cloudkitty_units }}"
+
+- name: Apply changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish CloudKitty on the VIP (plain HTTP, like the guide's endpoint)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: cloudkitty-api
+    stream_ports: [8889]
+    stream_mode: plain
+  when: ha_enabled | bool
+
+- name: Apply HAProxy changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable the hashmap rating module (Server World 59)
+  ansible.builtin.command: openstack rating module enable hashmap
+  delegate_to: "{{ controller_host }}"
+  run_once: true
+  register: _hashmap
+  retries: 10
+  delay: 6
+  until: _hashmap.rc == 0
+  changed_when: false

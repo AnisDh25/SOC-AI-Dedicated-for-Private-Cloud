@@ -1,0 +1,14 @@
+---
+# NFS client + NFSv4 idmapd domain (Server World 30/31/32).
+- name: Install nfs-common
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+
+- name: idmapd domain
+  ansible.builtin.lineinfile:
+    path: /etc/idmapd.conf
+    regexp: '^#?\s*Domain\s*='
+    line: "Domain = {{ domain }}"
+    insertafter: '^\[General\]'
+  notify: restart nfs-idmapd

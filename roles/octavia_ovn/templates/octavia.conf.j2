@@ -1,0 +1,48 @@
+# {{ ansible_managed }}
+# Based on Server World (49); amphora settings replaced by the OVN provider.
+[DEFAULT]
+transport_url = {{ rabbit_url }}
+
+[api_settings]
+bind_host = {{ api_bind_host }}
+bind_port = 9876
+auth_strategy = keystone
+api_base_uri = https://{{ network_fqdn }}:9876
+enabled_provider_drivers = ovn:'Octavia OVN driver'
+default_provider_driver = ovn
+
+[driver_agent]
+enabled_provider_agents = ovn
+
+[ovn]
+ovn_nb_connection = {{ ovn_nb_connection }}
+ovn_sb_connection = {{ ovn_sb_connection }}
+
+[database]
+connection = mysql+pymysql://octavia:{{ vault_db_passwords.octavia }}@{{ controller_fqdn }}:3306/octavia
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = octavia
+password = {{ vault_service_passwords.octavia }}
+insecure = false
+
+[service_auth]
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = octavia
+password = {{ vault_service_passwords.octavia }}
+insecure = false
+
+[oslo_messaging]
+topic = octavia_prov

@@ -1,0 +1,150 @@
+---
+# Shared handlers. Handlers run in the order they are defined here, so
+# Apache (which frees ports) restarts before nginx reloads.
+# "pkg_installed" guards: on all-in-one hosts one role may change a config
+# file that a later role's service (not installed yet) also reads.
+
+- name: refresh package facts before guarded restarts
+  ansible.builtin.package_facts:
+    manager: apt
+  listen: [restart nova, restart neutron, restart cinder, restart manila, restart ceilometer]
+
+- name: restart mariadb
+  ansible.builtin.systemd_service: {name: mariadb, state: restarted}
+  throttle: 1   # Galera: never restart all nodes at once
+
+- name: restart memcached
+  ansible.builtin.systemd_service: {name: memcached, state: restarted}
+
+- name: restart openvswitch
+  ansible.builtin.systemd_service: {name: openvswitch-switch, state: restarted}
+
+- name: restart apache2
+  ansible.builtin.systemd_service: {name: apache2, state: restarted}
+
+- name: restart glance-api
+  ansible.builtin.systemd_service: {name: glance-api, state: restarted}
+
+- name: restart nova controller services
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: [apache2, nova-conductor, nova-scheduler, nova-novncproxy]
+  when: is_controller | bool and 'nova-conductor' in ansible_facts.packages
+  listen: restart nova
+
+- name: restart nova-compute
+  ansible.builtin.systemd_service: {name: nova-compute, state: restarted}
+  when: is_compute | bool and 'nova-compute' in ansible_facts.packages
+  listen: restart nova
+
+- name: restart neutron server services
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: "{{ ['apache2', 'neutron-dhcp-agent'] + (neutron_server_units | default([])) }}"
+  when: is_network | bool and 'neutron-server' in ansible_facts.packages
+  listen: restart neutron
+
+- name: restart neutron chassis agents
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: [neutron-ovn-metadata-agent, neutron-dhcp-agent]
+  when: is_compute | bool and 'neutron-ovn-metadata-agent' in ansible_facts.packages
+  listen: restart neutron
+
+- name: restart cinder api
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: [apache2, cinder-scheduler]
+  when: is_controller | bool and 'cinder-scheduler' in ansible_facts.packages
+  listen: restart cinder
+
+- name: restart cinder-volume
+  ansible.builtin.systemd_service: {name: cinder-volume, state: restarted}
+  when: is_storage | bool and 'cinder-volume' in ansible_facts.packages
+  listen: restart cinder
+
+- name: restart cinder-backup
+  ansible.builtin.systemd_service: {name: cinder-backup, state: restarted}
+  when: is_storage | bool and 'cinder-backup' in ansible_facts.packages
+  listen: restart cinder
+
+- name: restart manila api
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: [manila-api, manila-scheduler]
+  when: is_controller | bool and 'manila-api' in ansible_facts.packages
+  listen: restart manila
+
+- name: restart manila-share
+  ansible.builtin.systemd_service: {name: manila-share, state: restarted}
+  when: is_storage | bool and 'manila-share' in ansible_facts.packages
+  listen: restart manila
+
+- name: restart heat
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: [apache2, heat-engine]
+
+- name: restart bind9
+  ansible.builtin.systemd_service: {name: named, state: restarted}
+
+- name: restart designate
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: "{{ ['designate-central', 'designate-worker', 'designate-producer', 'designate-mdns'] + (designate_api_units | default([])) }}"
+
+- name: restart octavia
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: "{{ octavia_units | default(['octavia-driver-agent']) }}"
+
+- name: restart swift-proxy
+  ansible.builtin.systemd_service: {name: swift-proxy, state: restarted}
+
+- name: restart swift storage
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: "{{ swift_storage_services }}"
+
+- name: restart rsync
+  ansible.builtin.systemd_service: {name: rsync, state: restarted}
+
+- name: restart gnocchi
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: [apache2, gnocchi-metricd]
+
+- name: restart ceilometer central
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: [ceilometer-agent-central, ceilometer-agent-notification]
+  when: is_network | bool and 'ceilometer-agent-central' in ansible_facts.packages
+  listen: restart ceilometer
+
+- name: restart ceilometer compute
+  ansible.builtin.systemd_service: {name: ceilometer-agent-compute, state: restarted}
+  when: is_compute | bool and 'ceilometer-agent-compute' in ansible_facts.packages
+  listen: restart ceilometer
+
+- name: restart cloudkitty
+  ansible.builtin.systemd_service: {name: "{{ item }}", state: restarted}
+  loop: "{{ cloudkitty_units | default(['cloudkitty-processor']) }}"
+
+- name: reload nfs exports
+  ansible.builtin.command: exportfs -ra
+  changed_when: true
+
+- name: restart nfs-idmapd
+  ansible.builtin.systemd_service: {name: nfs-idmapd, state: restarted}
+  failed_when: false
+
+- name: validate haproxy configuration
+  ansible.builtin.command: haproxy -c -q -f /etc/haproxy/haproxy.cfg -f /etc/haproxy/conf.d
+  changed_when: false
+  listen: [reload haproxy, restart haproxy]
+
+- name: restart haproxy
+  ansible.builtin.systemd_service: {name: haproxy, state: restarted}
+
+- name: reload haproxy
+  ansible.builtin.systemd_service: {name: haproxy, state: reloaded}
+
+- name: restart keepalived
+  ansible.builtin.systemd_service: {name: keepalived, state: restarted}
+
+- name: validate nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+  listen: reload nginx
+
+- name: reload nginx
+  ansible.builtin.systemd_service: {name: nginx, state: reloaded}

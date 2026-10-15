@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+{% set mode = stream_mode | default('tls') %}
+{% for port in stream_ports %}
+listen {{ stream_name }}-{{ port }}
+    bind {{ vip_address }}:{{ port }}{% if mode == 'tls' %} ssl crt {{ tls_haproxy_pem }}{% endif %}
+
+    mode tcp
+    balance {{ stream_balance | default('roundrobin') }}
+{% if stream_timeout is defined %}
+    timeout client {{ stream_timeout }}
+    timeout server {{ stream_timeout }}
+{% endif %}
+{% for h in ansible_play_hosts_all %}
+    server {{ h.split('.')[0] }} {{ hostvars[h].mgmt_ip }}:{{ port }} check inter 2s rise 2 fall 3{% if (stream_backup | default(false)) and not loop.first %} backup{% endif %}
+
+{% endfor %}
+
+{% endfor %}

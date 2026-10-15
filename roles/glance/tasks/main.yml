@@ -1,0 +1,89 @@
+---
+# Server World (05) Configure Glance and (06) Add VM Images.
+
+- name: Register Glance in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: glance
+    ks_password: "{{ vault_service_passwords.glance }}"
+    ks_services:
+      - {name: glance, type: image, description: OpenStack Image service, url: "https://{{ controller_fqdn }}:9292"}
+
+- name: Glance database
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [glance]
+    db_user: glance
+    db_password: "{{ vault_db_passwords.glance }}"
+
+- name: Image store shared by all controllers over NFS (HA)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: shared_state_dir.yml
+  vars:
+    svc_user: glance
+    svc_uid: "{{ glance_uid }}"
+    svc_home: /var/lib/glance
+    nfs_export: "{{ nfs_glance_path }}"
+    mount_path: /var/lib/glance/images
+  when: ha_enabled | bool
+
+- name: Install Glance
+  ansible.builtin.apt:
+    name: glance
+    state: present
+
+- name: glance-api.conf
+  ansible.builtin.template:
+    src: glance-api.conf.j2
+    dest: /etc/glance/glance-api.conf
+    owner: root
+    group: glance
+    mode: "0640"
+  notify: restart glance-api
+
+- name: glance-manage db_sync
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: glance
+    manage_cmds: ["glance-manage db_sync"]
+
+- name: Enable glance-api
+  ansible.builtin.systemd_service:
+    name: glance-api
+    state: started
+    enabled: true
+
+- name: Publish Glance through nginx (9292)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: glance-api
+    stream_ports: [9292]
+
+- name: Apply Glance changes now
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the Glance API
+  ansible.builtin.uri:
+    url: "https://{{ controller_fqdn }}:9292/"
+    ca_path: "{{ tls_ca }}"
+    status_code: [200, 300]
+  register: _glance
+  until: _glance.status in [200, 300]
+  retries: 20
+  delay: 3
+
+# ---- (06) Add VM Images (once) -------------------------------------------
+- name: Add VM images
+  ansible.builtin.include_tasks:
+    file: images.yml
+    apply:
+      run_once: true

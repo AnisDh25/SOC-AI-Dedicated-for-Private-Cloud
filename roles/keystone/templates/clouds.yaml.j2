@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+clouds:
+{% for c in [
+  {'name': 'admin', 'project': 'admin', 'user': 'admin', 'password': vault_admin_password},
+  {'name': 'demo', 'project': demo_project, 'user': demo_user, 'password': vault_demo_user_password},
+  {'name': 'swift', 'project': swift_project, 'user': swift_user, 'password': vault_swiftuser_password},
+] %}
+  {{ c.name }}:
+    auth:
+      auth_url: {{ keystone_url }}/v3
+      username: {{ c.user }}
+      password: {{ c.password }}
+      project_name: {{ c.project }}
+      user_domain_name: Default
+      project_domain_name: Default
+    region_name: {{ region }}
+    interface: public
+    identity_api_version: 3
+    volume_api_version: 3
+    cacert: {{ tls_ca }}
+{% endfor %}

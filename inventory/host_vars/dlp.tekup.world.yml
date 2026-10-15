@@ -1,0 +1,7 @@
+---
+ansible_host: 10.0.0.30
+ansible_user: ubuntu
+# Management IP (eth0). Used for every service address and for TLS SANs.
+mgmt_ip: 10.0.0.30
+# Interface without IP dedicated to the provider/external network (br-eth1).
+provider_interface: eth1

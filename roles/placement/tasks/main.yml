@@ -1,0 +1,64 @@
+---
+# Server World (07)/(08): Placement API.
+
+- name: Register Placement in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: placement
+    ks_password: "{{ vault_service_passwords.placement }}"
+    ks_services:
+      - {name: placement, type: placement, description: OpenStack Compute Placement service, url: "https://{{ controller_fqdn }}:8778"}
+
+- name: Placement database
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [placement]
+    db_user: placement
+    db_password: "{{ vault_db_passwords.placement }}"
+
+- name: Install placement-api
+  ansible.builtin.apt:
+    name: placement-api
+    state: present
+
+- name: placement.conf
+  ansible.builtin.template:
+    src: placement.conf.j2
+    dest: /etc/placement/placement.conf
+    owner: root
+    group: placement
+    mode: "0640"
+  notify: restart apache2
+
+- name: Bind placement-api to the API bind address:8778
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [8778]
+
+- name: placement-manage db sync
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: placement
+    manage_cmds: ["placement-manage db sync"]
+
+- name: Restart Apache before publishing the port
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish Placement through nginx (8778)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: placement-api
+    stream_ports: [8778]
+
+- name: Apply nginx changes
+  ansible.builtin.meta: flush_handlers

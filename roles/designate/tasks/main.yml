@@ -1,0 +1,165 @@
+---
+# Server World flamingo4 (45) Designate control node, (46) network node (BIND 9).
+
+- name: Register Designate in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: designate
+    ks_password: "{{ vault_service_passwords.designate }}"
+    ks_services:
+      - {name: designate, type: dns, description: OpenStack DNS Service, url: "https://{{ network_fqdn }}:9001"}
+
+- name: Designate database (utf8mb3 as in the guide)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [designate]
+    db_user: designate
+    db_password: "{{ vault_db_passwords.designate }}"
+    db_encoding: utf8mb3
+    db_collation: utf8mb3_general_ci
+
+- name: Install Designate and BIND 9
+  ansible.builtin.apt:
+    name:
+      - designate-api
+      - designate-central
+      - designate-worker
+      - designate-producer
+      - designate-mdns
+      - python3-designateclient
+      - bind9
+      - bind9utils
+    state: present
+
+# ---- BIND 9 ---------------------------------------------------------------
+- name: RNDC key for Designate (created once, on the first network node)
+  ansible.builtin.command: rndc-confgen -a -k designate -c /etc/bind/designate.key
+  args:
+    creates: /etc/bind/designate.key
+  when: inventory_hostname == network_host
+
+- name: Read the RNDC key
+  ansible.builtin.slurp:
+    src: /etc/bind/designate.key
+  register: _rndc_key
+  delegate_to: "{{ network_host }}"
+  run_once: true
+  no_log: true
+
+- name: Same RNDC key on every network node (readable by bind and designate)
+  ansible.builtin.copy:
+    dest: /etc/bind/designate.key
+    content: "{{ _rndc_key.content | b64decode }}"
+    owner: bind
+    group: designate
+    mode: "0640"
+  no_log: true
+  notify: restart bind9
+
+- name: named.conf.options
+  ansible.builtin.template:
+    src: named.conf.options.j2
+    dest: /etc/bind/named.conf.options
+    owner: bind
+    group: bind
+    mode: "0644"
+  notify: restart bind9
+
+- name: Enable BIND
+  ansible.builtin.systemd_service:
+    name: named
+    state: started
+    enabled: true
+
+# ---- Designate --------------------------------------------------------------
+- name: designate.conf
+  ansible.builtin.template:
+    src: designate.conf.j2
+    dest: /etc/designate/designate.conf
+    owner: root
+    group: designate
+    mode: "0640"
+  notify: restart designate
+
+- name: Detect how designate-api is packaged
+  ansible.builtin.stat:
+    path: /etc/apache2/sites-available/designate-api.conf
+  register: _designate_site
+
+- name: designate-api units to restart
+  ansible.builtin.set_fact:
+    designate_api_units: "{{ ['apache2'] if _designate_site.stat.exists else ['designate-api'] }}"
+
+- name: Keep designate-api on the API bind address if it runs under Apache
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [9001]
+
+- name: designate-manage database sync
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: designate
+    manage_cmds: ["designate-manage database sync"]
+
+- name: Restart BIND/Designate now
+  ansible.builtin.meta: flush_handlers
+
+- name: pools.yaml
+  ansible.builtin.template:
+    src: pools.yaml.j2
+    dest: /etc/designate/pools.yaml
+    owner: root
+    group: designate
+    mode: "0640"
+  register: _pools
+
+- name: Check whether the default pool was loaded
+  ansible.builtin.stat:
+    path: /etc/designate/.ansible-pool-loaded
+  register: _pool_marker
+  run_once: true
+
+- name: designate-manage pool update (once, pools live in the shared DB)
+  ansible.builtin.command:
+    argv: [su, -s, /bin/sh, -c, "designate-manage pool update", designate]
+  when: _pools is changed or not _pool_marker.stat.exists
+  changed_when: true
+  run_once: true
+  notify: restart designate
+
+- name: Mark the pool as loaded
+  ansible.builtin.file:
+    path: /etc/designate/.ansible-pool-loaded
+    state: touch
+    mode: "0600"
+  when: _pools is changed or not _pool_marker.stat.exists
+  run_once: true
+
+- name: Enable Designate services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: "{{ ['designate-central', 'designate-worker', 'designate-producer', 'designate-mdns'] + designate_api_units }}"
+
+- name: Restart Designate before publishing the port
+  ansible.builtin.meta: flush_handlers
+
+- name: Publish Designate through nginx (9001)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: designate-api
+    stream_ports: [9001]
+
+- name: Apply nginx changes
+  ansible.builtin.meta: flush_handlers

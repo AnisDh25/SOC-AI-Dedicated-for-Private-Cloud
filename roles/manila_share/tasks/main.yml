@@ -1,0 +1,44 @@
+---
+# Server World flamingo3 (43) Manila storage node and (44) LVM share backend.
+
+- name: Check the Manila LVM disk
+  ansible.builtin.stat:
+    path: "{{ manila_lvm_device }}"
+  register: _manila_disk
+
+- name: Fail when the Manila LVM disk is missing
+  ansible.builtin.assert:
+    that: _manila_disk.stat.exists
+    fail_msg: "manila_lvm_device {{ manila_lvm_device }} does not exist on {{ inventory_hostname }}"
+
+- name: Install manila-share
+  ansible.builtin.apt:
+    name: [manila-share, python3-pymysql, python3-mysqldb, lvm2, nfs-kernel-server]
+    state: present
+
+- name: Manila configuration
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manila_conf.yml
+
+- name: Allow manila to run privsep-helper
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/manila_sudoers
+    content: "manila ALL = (root) NOPASSWD: /usr/bin/privsep-helper --config-file /etc/manila/manila.conf *\n"
+    mode: "0440"
+    validate: visudo -cf %s
+
+- name: Volume group {{ manila_vg }}
+  community.general.lvg:
+    vg: "{{ manila_vg }}"
+    pvs: ["{{ manila_lvm_device }}"]
+
+- name: Enable manila-share and nfs-server
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [manila-share, nfs-server]
+
+- name: Apply changes
+  ansible.builtin.meta: flush_handlers

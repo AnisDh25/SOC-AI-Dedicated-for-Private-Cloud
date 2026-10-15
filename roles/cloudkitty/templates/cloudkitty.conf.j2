@@ -1,0 +1,60 @@
+# {{ ansible_managed }}
+[DEFAULT]
+log_dir = /var/log/cloudkitty
+transport_url = {{ rabbit_url }}
+auth_strategy = keystone
+
+[api]
+# standalone cloudkitty-api: all interfaces, or the management IP in HA (HAProxy owns the VIP)
+host_ip = {{ mgmt_ip if ha_enabled | bool else '0.0.0.0' }}
+port = 8889
+
+[collect]
+collector = gnocchi
+# rating period in seconds (Server World uses 600 for testing)
+period = 600
+metrics_conf = /etc/cloudkitty/metrics.yml
+
+[collector_gnocchi]
+auth_section = keystone_authtoken
+region_name = {{ region }}
+
+[database]
+connection = mysql+pymysql://cloudkitty:{{ vault_db_passwords.cloudkitty }}@{{ controller_fqdn }}:3306/cloudkitty
+
+[fetcher]
+backend = gnocchi
+
+[fetcher_gnocchi]
+auth_section = keystone_authtoken
+region_name = {{ region }}
+
+[fetcher_keystone]
+keystone_version = 3
+auth_section = keystone_authtoken
+region_name = {{ region }}
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = cloudkitty
+password = {{ vault_service_passwords.cloudkitty }}
+region_name = {{ region }}
+service_token_roles_required = true
+insecure = false
+
+[oslo_messaging_notifications]
+driver = messagingv2
+transport_url = {{ rabbit_url }}
+
+[storage]
+backend = sqlalchemy
+version = 1
+
+[orchestrator]
+coordination_url = mysql://cloudkitty:{{ vault_db_passwords.cloudkitty }}@{{ controller_fqdn }}:3306/cloudkitty

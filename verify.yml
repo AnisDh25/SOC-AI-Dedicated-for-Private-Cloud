@@ -1,0 +1,38 @@
+---
+# Read-only health report:  ansible-playbook verify.yml --ask-vault-pass
+- name: OpenStack service status
+  hosts: controller[0]
+  become: true
+  gather_facts: false
+  environment:
+    OS_CLOUD: admin
+  tasks:
+    - name: Collect service lists
+      ansible.builtin.command: "{{ item.cmd }}"
+      loop:
+        - {cmd: openstack endpoint list -c "Service Name" -c Interface -c URL}
+        - {cmd: openstack compute service list}
+        - {cmd: openstack hypervisor list}
+        - {cmd: openstack network agent list}
+        - {cmd: openstack volume service list, when: "{{ enable_cinder }}"}
+        - {cmd: openstack share service list, when: "{{ enable_manila }}"}
+        - {cmd: openstack orchestration service list, when: "{{ enable_heat }}"}
+        - {cmd: openstack dns service list, when: "{{ enable_designate }}"}
+        - {cmd: openstack loadbalancer provider list, when: "{{ enable_octavia }}"}
+        - {cmd: openstack metric status, when: "{{ enable_telemetry }}"}
+        - {cmd: openstack rating module list, when: "{{ enable_cloudkitty and enable_telemetry }}"}
+        - {cmd: openstack --os-cloud swift container list, when: "{{ enable_swift }}"}
+        - {cmd: openstack --os-cloud demo secret list, when: "{{ enable_barbican }}"}
+      loop_control:
+        label: "{{ item.cmd }}"
+      when: item.when | default(true) | bool
+      register: _status
+      changed_when: false
+      failed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ ['$ ' ~ item.item.cmd, ''] + (item.stdout_lines | default([])) + (item.stderr_lines | default([])) }}"
+      loop: "{{ _status.results | rejectattr('skipped', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.item.cmd }}"

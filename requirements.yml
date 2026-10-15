@@ -1,0 +1,9 @@
+---
+collections:
+  - name: openstack.cloud
+    version: ">=2.2.0"
+  - name: community.mysql
+  - name: community.rabbitmq
+  - name: community.general
+  - name: community.crypto
+  - name: ansible.posix

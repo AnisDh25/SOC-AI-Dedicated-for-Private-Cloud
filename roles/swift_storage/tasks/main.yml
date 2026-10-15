@@ -1,0 +1,115 @@
+---
+# Server World flamingo3 (40) Configure Swift (Storage Node).
+
+- name: Install Swift storage services
+  ansible.builtin.apt:
+    name: [swift, swift-account, swift-container, swift-object, xfsprogs, rsync]
+    state: present
+
+- name: Loop-file directories
+  ansible.builtin.file:
+    path: "{{ item.loop_file | dirname }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ swift_devices | selectattr('loop_file', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Create loop files
+  community.general.filesize:
+    path: "{{ item.loop_file }}"
+    size: "{{ item.loop_size | default('10G') }}"
+    sparse: true
+  loop: "{{ swift_devices | selectattr('loop_file', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.loop_file }}"
+
+- name: XFS filesystems
+  community.general.filesystem:
+    fstype: xfs
+    dev: "{{ item.disk | default(item.loop_file) }}"
+  loop: "{{ swift_devices }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Filesystem UUIDs of real disks
+  ansible.builtin.command: "blkid -s UUID -o value {{ item.disk }}"
+  loop: "{{ swift_devices | selectattr('disk', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.disk }}"
+  register: _swift_uuids
+  changed_when: false
+
+- name: Mount devices under /srv/node
+  ansible.posix.mount:
+    path: "/srv/node/{{ item.name }}"
+    src: >-
+      {{ item.loop_file if item.loop_file is defined else
+         '/dev/disk/by-uuid/' ~ (_swift_uuids.results | selectattr('item.name', 'equalto', item.name) | first).stdout }}
+    fstype: xfs
+    opts: "{{ 'loop,' if item.loop_file is defined else '' }}defaults,noatime,nodiratime"
+    state: mounted
+  loop: "{{ swift_devices }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Ownership of /srv/node and the recon cache
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: swift
+    group: swift
+    mode: "0755"
+  loop: "{{ ['/srv/node', '/var/cache/swift'] + (swift_devices | map(attribute='name') | map('regex_replace', '^', '/srv/node/') | list) }}"
+
+- name: Swift configuration
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: swift
+    mode: "0640"
+  loop:
+    - {src: "{{ playbook_dir }}/templates/swift.conf.j2", dest: /etc/swift/swift.conf}
+    - {src: account-server.conf.j2, dest: /etc/swift/account-server.conf}
+    - {src: container-server.conf.j2, dest: /etc/swift/container-server.conf}
+    - {src: object-server.conf.j2, dest: /etc/swift/object-server.conf}
+  loop_control:
+    label: "{{ item.dest }}"
+  notify: restart swift storage
+
+- name: Rings from the proxy node
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/.swift-rings/{{ item }}.ring.gz"
+    dest: "/etc/swift/{{ item }}.ring.gz"
+    owner: swift
+    group: swift
+    mode: "0644"
+  loop: [account, container, object]
+  notify: restart swift storage
+
+- name: rsyncd.conf
+  ansible.builtin.template:
+    src: rsyncd.conf.j2
+    dest: /etc/rsyncd.conf
+    mode: "0644"
+  notify: restart rsync
+
+- name: RSYNC_ENABLE=true
+  ansible.builtin.lineinfile:
+    path: /etc/default/rsync
+    regexp: '^RSYNC_ENABLE='
+    line: RSYNC_ENABLE=true
+    create: true
+    mode: "0644"
+  notify: restart rsync
+
+- name: Enable Swift storage services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: "{{ swift_storage_services }}"
+
+- name: Apply changes
+  ansible.builtin.meta: flush_handlers

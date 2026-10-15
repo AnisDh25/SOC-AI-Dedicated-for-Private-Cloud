@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+[swift-hash]
+swift_hash_path_suffix = {{ vault_swift_hash_suffix }}
+swift_hash_path_prefix = {{ vault_swift_hash_prefix }}
+
+[storage-policy:0]
+name = Policy-0
+default = yes

@@ -1,0 +1,18 @@
+---
+# Every lab VM from vms_ip, used only by bootstrap-hosts.yml (hostnames and
+# /etc/hosts). The workstation is the Ansible control node and runs the
+# playbooks locally; it is not part of the OpenStack inventories.
+all:
+  children:
+    ansible_control:
+      hosts:
+        workstation.tekup.world:
+          ansible_connection: local
+    openstack_nodes:
+      hosts:
+        controller01.tekup.world:
+        controller02.tekup.world:
+        controller03.tekup.world:
+        node01.tekup.world:
+        node02.tekup.world:
+        storage.tekup.world:

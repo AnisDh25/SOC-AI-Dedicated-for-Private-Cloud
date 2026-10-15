@@ -1,0 +1,18 @@
+---
+- name: manila.conf
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/manila.conf.j2"
+    dest: /etc/manila/manila.conf
+    owner: root
+    group: manila
+    mode: "0640"
+  notify: restart manila
+
+- name: Empty policy.yaml (Server World 42)
+  ansible.builtin.copy:
+    dest: /etc/manila/policy.yaml
+    content: ""
+    force: false
+    owner: root
+    group: manila
+    mode: "0640"

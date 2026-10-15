@@ -1,0 +1,7 @@
+---
+# compute node 2 (real lab VM, see vms_ip)
+ansible_host: 192.168.1.25
+ansible_user: ubuntu
+mgmt_ip: 192.168.1.25
+# Unaddressed NIC for the provider/external network.
+provider_interface: ens37

@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# One BIND 9 target per network node; every designate-mdns is a master.
+- name: default
+  description: Default Pool
+  attributes: {}
+  ns_records:
+{% for h in groups['network'] %}
+    - hostname: {{ h }}.
+      priority: {{ loop.index }}
+{% endfor %}
+  nameservers:
+{% for ip in network_ips %}
+    - host: {{ ip }}
+      port: 53
+{% endfor %}
+  targets:
+{% for ip in network_ips %}
+    - type: bind9
+      description: BIND9 Server {{ ip }}
+      masters:
+{% for m in network_ips %}
+        - host: {{ m }}
+          port: 5354
+{% endfor %}
+      options:
+        host: {{ ip }}
+        port: 53
+        rndc_host: {{ ip }}
+        rndc_port: 953
+        rndc_key_file: /etc/bind/designate.key
+{% endfor %}

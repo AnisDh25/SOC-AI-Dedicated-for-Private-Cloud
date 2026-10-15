@@ -1,0 +1,26 @@
+---
+# Server World flamingo4 (54) Configure Ceilometer (Compute Node).
+# The Nova notification settings of (55) are rendered by templates/nova.conf.j2.
+
+- name: Install the Ceilometer compute agent
+  ansible.builtin.apt:
+    name: ceilometer-agent-compute
+    state: present
+
+- name: ceilometer.conf
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/ceilometer.conf.j2"
+    dest: /etc/ceilometer/ceilometer.conf
+    owner: root
+    group: ceilometer
+    mode: "0640"
+  notify: restart ceilometer
+
+- name: Enable the Ceilometer compute agent
+  ansible.builtin.systemd_service:
+    name: ceilometer-agent-compute
+    state: started
+    enabled: true
+
+- name: Apply changes
+  ansible.builtin.meta: flush_handlers

@@ -1,0 +1,195 @@
+---
+# Server World (10) Neutron #1, (11) Neutron #2 and flamingo2 (23) OVN network node:
+# neutron-server (Apache WSGI), OVN central (NB/SB DB + northd), DHCP agent.
+
+- name: Register Neutron in Keystone
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: keystone_register.yml
+  vars:
+    ks_user: neutron
+    ks_password: "{{ vault_service_passwords.neutron }}"
+    ks_services:
+      - {name: neutron, type: network, description: OpenStack Networking service, url: "https://{{ network_fqdn }}:9696"}
+
+- name: Neutron database
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: db.yml
+  vars:
+    db_names: [neutron_ml2]
+    db_user: neutron
+    db_password: "{{ vault_db_passwords.neutron }}"
+
+- name: Install neutron-server and OVN central
+  ansible.builtin.apt:
+    name:
+      - neutron-server
+      - neutron-plugin-ml2
+      - neutron-dhcp-agent
+      - python3-neutronclient
+      - ovn-central
+      - openvswitch-switch
+      - apache2
+      - libapache2-mod-wsgi-py3
+    state: present
+
+- name: Neutron configuration
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: neutron_common.yml
+
+- name: Detect extra neutron server units shipped by the package
+  ansible.builtin.set_fact:
+    neutron_server_units: >-
+      {{ ['neutron-rpc-server', 'neutron-periodic-workers', 'neutron-ovn-maintenance-worker']
+         | select('in', ansible_facts.services.keys() | map('regex_replace', '\.service$', '') | list) | list }}
+
+- name: Bind neutron-api to the API bind address:9696
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: apache_listen.yml
+  vars:
+    listen_ports: [9696]
+
+- name: Enable mod_wsgi
+  community.general.apache2_module:
+    name: wsgi
+    state: present
+    ignore_configcheck: true
+  notify: restart apache2
+
+- name: Neutron database migration
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: manage.yml
+  vars:
+    manage_user: neutron
+    manage_cmds:
+      - neutron-db-manage --config-file /etc/neutron/neutron.conf --config-file /etc/neutron/plugin.ini upgrade head
+
+- name: Restart Open vSwitch / Apache now
+  ansible.builtin.meta: flush_handlers
+
+- name: OVN NB/SB as a RAFT cluster on all network nodes (HA)
+  when: ha_enabled | bool
+  block:
+    - name: ovn-central cluster options
+      ansible.builtin.template:
+        src: ovn-central.default.j2
+        dest: /etc/default/ovn-central
+        mode: "0644"
+      register: _ovn_default
+
+    - name: Has this node been converted to the clustered databases?
+      ansible.builtin.stat:
+        path: /var/lib/ovn/.ansible-clustered
+      register: _ovn_clustered
+
+    - name: Drop the standalone databases created by the package
+      when: not _ovn_clustered.stat.exists
+      block:
+        - name: Stop ovn-central
+          ansible.builtin.systemd_service:
+            name: "{{ item }}"
+            state: stopped
+          loop: [ovn-northd, ovn-central, ovn-ovsdb-server-nb, ovn-ovsdb-server-sb]
+          failed_when: false
+        - name: Remove standalone NB/SB database files
+          ansible.builtin.file:
+            path: "/var/lib/ovn/{{ item }}"
+            state: absent
+          loop: [ovnnb_db.db, ovnsb_db.db]
+
+    - name: Start the cluster leader first
+      ansible.builtin.systemd_service:
+        name: ovn-central
+        state: "{{ 'restarted' if (_ovn_default is changed or not _ovn_clustered.stat.exists) else 'started' }}"
+        enabled: true
+      when: inventory_hostname == network_host
+
+    - name: Join the other members one at a time
+      ansible.builtin.systemd_service:
+        name: ovn-central
+        state: "{{ 'restarted' if (_ovn_default is changed or not _ovn_clustered.stat.exists) else 'started' }}"
+        enabled: true
+      when: inventory_hostname != network_host
+      throttle: 1
+
+    - name: Wait until the NB and SB clusters have every member
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          nb=$(ovs-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound | grep -c '^    [0-9a-f]\{4\} ')
+          sb=$(ovs-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/status OVN_Southbound | grep -c '^    [0-9a-f]\{4\} ')
+          echo "$nb $sb"
+        executable: /bin/bash
+      register: _ovn_members
+      until: >-
+        _ovn_members.rc == 0 and
+        (_ovn_members.stdout.split() | map('int') | min) >= (groups['network'] | length)
+      retries: 30
+      delay: 5
+      changed_when: false
+      run_once: true
+
+    - name: Mark this node as clustered
+      ansible.builtin.file:
+        path: /var/lib/ovn/.ansible-clustered
+        state: touch
+        mode: "0644"
+      when: not _ovn_clustered.stat.exists
+
+- name: Start OVN central
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: [openvswitch-switch, ovn-central, ovn-northd]
+
+- name: Create br-int
+  ansible.builtin.command: ovs-vsctl --may-exist add-br br-int
+  changed_when: false
+
+- name: OVN NB/SB listen on the network node
+  when: not ha_enabled | bool
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      changed=0
+      if ! ovn-nbctl get-connection | grep -qw "ptcp:6641:{{ mgmt_ip }}"; then
+        ovn-nbctl set-connection ptcp:6641:{{ mgmt_ip }} -- set connection . inactivity_probe=60000; changed=1
+      fi
+      if ! ovn-sbctl get-connection | grep -qw "ptcp:6642:{{ mgmt_ip }}"; then
+        ovn-sbctl set-connection ptcp:6642:{{ mgmt_ip }} -- set connection . inactivity_probe=60000; changed=1
+      fi
+      [ $changed -eq 1 ] && echo CHANGED || true
+    executable: /bin/bash
+  register: _ovn_conn
+  changed_when: "'CHANGED' in _ovn_conn.stdout"
+
+- name: Gateway chassis option
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: ovs_external_ids.yml
+  vars:
+    ovs_external_ids:
+      ovn-cms-options: enable-chassis-as-gw
+
+- name: Enable Neutron services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop: "{{ ['apache2', 'neutron-dhcp-agent'] + neutron_server_units }}"
+
+- name: Publish Neutron through nginx (9696)
+  ansible.builtin.include_role:
+    name: os_common
+    tasks_from: nginx_stream.yml
+  vars:
+    stream_name: neutron-api
+    stream_ports: [9696]
+
+- name: Apply changes
+  ansible.builtin.meta: flush_handlers

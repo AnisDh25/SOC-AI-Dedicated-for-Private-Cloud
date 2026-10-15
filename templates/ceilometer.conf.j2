@@ -1,0 +1,42 @@
+# {{ ansible_managed }}
+# Server World flamingo4 (53) central/notification agents, (54) compute agent.
+[DEFAULT]
+transport_url = {{ rabbit_url }}
+{% if is_network | bool %}
+
+[api]
+auth_mode = keystone
+
+[dispatcher_gnocchi]
+filter_service_activity = False
+{% if ha_enabled | bool %}
+
+[coordination]
+# central agents on every network node split the polling work between them
+backend_url = mysql://tooz:{{ vault_db_passwords.tooz }}@{{ controller_fqdn }}:3306/tooz
+{% endif %}
+
+[keystone_authtoken]
+www_authenticate_uri = {{ keystone_url }}
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = ceilometer
+password = {{ vault_service_passwords.ceilometer }}
+insecure = false
+{% endif %}
+
+[service_credentials]
+auth_url = {{ keystone_url }}
+memcached_servers = {{ memcached_servers }}
+auth_type = password
+project_domain_name = Default
+user_domain_name = Default
+project_name = service
+username = ceilometer
+password = {{ vault_service_passwords.ceilometer }}
+region_name = {{ region }}
+insecure = false
